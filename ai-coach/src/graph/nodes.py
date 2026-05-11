@@ -51,3 +51,44 @@ def _background_finetune(user_id: str):
 
     gguf_path = run_finetune(user_id, data_path, output_dir)
     register_with_ollama(gguf_path, model_name)
+
+
+
+
+
+# src/graph/nodes.py  (excerpt: hitl_node)
+
+from langgraph.types import interrupt
+from src.state.schema import CoachState
+
+
+def hitl_node(state: CoachState) -> CoachState:
+    """
+    LangGraph interrupt node.
+    Execution pauses here; resumes only after human provides input.
+    The Chainlit UI handles presenting the approval UI.
+    """
+    # This call serializes state and pauses the graph.
+    # LangGraph will not advance past this node until:
+    #   graph.update_state(config, {"human_approval": True/False})
+    #   graph.invoke(None, config=config)  ← resume
+    human_response = interrupt({
+        "prompt": state["hitl_prompt"],
+        "content_preview": _get_preview(state),
+    })
+
+    return {
+        **state,
+        "human_approval": human_response.get("approved", False),
+        "hitl_required": False,
+    }
+
+
+def _get_preview(state: CoachState) -> str:
+    if state.get("learning_plan"):
+        plan = state["learning_plan"]
+        return f"Learning plan: {len(plan.weeks)} weeks, targeting {state['user_profile'].target_role}"
+    if state.get("current_project"):
+        proj = state["current_project"]
+        return f"Project: {proj.title} ({proj.difficulty}), ~{proj.estimated_hours}h"
+    return "No preview available."
