@@ -157,18 +157,18 @@ pip install pip==24.3.1 setuptools==75.1.0
 
 ```text
 # Orchestration
-langgraph==1.1.3
+langgraph>=1.0.2,<1.1.0
 langchain==1.0.3
-langchain-community==0.3.9
-langchain-ollama==0.3.1
-langchain-core==0.3.25
+langchain-community>=0.4.1
+langchain-ollama>=1.0.0
+# langchain-core – removed explicit pin (let pip resolve)
 
 # Agent framework
-crewai==1.12.0
-crewai-tools==0.28.0
+crewai==1.14.4
+crewai-tools==1.14.4
 
 # Vector database & RAG
-chromadb==0.6.3
+chromadb>=1.1.0,<2.0.0
 sentence-transformers==3.4.1
 
 # Memory persistence
@@ -184,30 +184,31 @@ pyaudio==0.2.14
 sounddevice==0.5.0
 
 # Fine-tuning
-transformers==4.47.0
+transformers>=4.46.1,!=4.47.0,<5.0.0
 peft==0.14.0
 trl==0.12.0
-bitsandbytes==0.44.1
-unsloth==2025.3.19               # 2x faster, 70% less VRAM
-datasets==3.2.0
+bitsandbytes==0.45.5
+unsloth>=2025.7.4               # 2x faster, 70% less VRAM
+datasets>=3.4.1,!=4.0.*,!=4.1.0
 accelerate==1.2.1
 
 # Observability
-langsmith==0.2.3
-opentelemetry-sdk==1.28.0
-opentelemetry-exporter-otlp==1.28.0
+langsmith>=0.3.45,<1.0.0
+opentelemetry-api==1.34.1
+opentelemetry-sdk==1.34.1
+opentelemetry-exporter-otlp==1.34.1
 prometheus-client==0.21.0
 
 # Data ingestion
 PyGithub==2.5.0
 kaggle==1.6.17
-httpx==0.27.2
+httpx>=0.28.1,<0.29.0
 
 # Utilities
-pydantic==2.10.3
-python-dotenv==1.0.1
+pydantic>=2.11.9,<3.0.0
+python-dotenv>=1.1.1,<2.0.0
 tenacity==9.0.0
-rich==13.9.4
+rich>=14.2.0
 schedule==1.2.2
 ```
 
