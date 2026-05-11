@@ -1,0 +1,2 @@
+"""Whisper STT integration."""
+

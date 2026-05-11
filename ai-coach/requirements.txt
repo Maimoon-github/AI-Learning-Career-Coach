@@ -1,0 +1,33 @@
+# Core
+langgraph
+langchain
+langchain-openai
+langchain-community
+crewai
+unsloth
+peft
+accelerate
+bitsandbytes
+
+# Storage
+chromadb
+sqlite-utils
+
+# Voice
+openai-whisper
+kokoro-tts
+
+# UI
+chainlit
+
+# Observability
+opentelemetry-api
+opentelemetry-sdk
+prometheus-client
+
+# Utilities
+python-dotenv
+pydantic
+duckduckgo-search
+PyGithub
+kaggle

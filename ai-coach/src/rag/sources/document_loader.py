@@ -1,0 +1,2 @@
+"""Generic document loader."""
+

@@ -1,0 +1,2 @@
+"""SQLite user profile store."""
+
