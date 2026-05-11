@@ -92,3 +92,30 @@ def _get_preview(state: CoachState) -> str:
         proj = state["current_project"]
         return f"Project: {proj.title} ({proj.difficulty}), ~{proj.estimated_hours}h"
     return "No preview available."
+
+
+
+
+
+
+# src/graph/nodes.py  (excerpt: memory_ingest_node with guardrails)
+
+import re
+from src.state.schema import CoachState
+
+BLOCKED_PATTERNS = [
+    r"ignore (previous|all) instructions",
+    r"you are now",
+    r"jailbreak",
+    r"DAN mode",
+]
+
+def apply_input_guardrails(user_input: str) -> tuple[str, bool]:
+    """
+    Sanitize user input. Returns (cleaned_input, is_safe).
+    """
+    for pattern in BLOCKED_PATTERNS:
+        if re.search(pattern, user_input, re.IGNORECASE):
+            return user_input, False
+    # Truncate extremely long inputs
+    return user_input[:4000], True
