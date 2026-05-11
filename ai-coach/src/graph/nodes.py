@@ -119,3 +119,26 @@ def apply_input_guardrails(user_input: str) -> tuple[str, bool]:
             return user_input, False
     # Truncate extremely long inputs
     return user_input[:4000], True
+
+
+
+
+
+
+
+# src/graph/nodes.py  (excerpt: responder_node with retry)
+
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from langchain_ollama import ChatOllama
+from langchain_core.exceptions import OutputParserException
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type((OutputParserException, ValueError)),
+)
+def _call_llm_with_retry(llm: ChatOllama, prompt: str) -> str:
+    """Retry LLM calls on transient failures."""
+    result = llm.invoke(prompt)
+    return result.content
