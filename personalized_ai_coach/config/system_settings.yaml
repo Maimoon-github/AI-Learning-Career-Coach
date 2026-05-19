@@ -1,0 +1,44 @@
+workflow:
+  max_crew_retries: 3
+  crew_retry_delay_seconds: 2
+  crew_retry_backoff_multiplier: 2.0
+  node_timeout_seconds: 120
+  hitl_timeout_seconds: 300
+  checkpoint_backend: redis           # memory | redis | postgres
+  enable_streaming: true
+
+hitl:
+  gates:
+    - learning_path_approval
+    - project_selection
+    - weekly_review
+  auto_approve_after_seconds: 0       # 0 = never auto-approve
+  max_revision_cycles: 3
+
+fine_tuning:
+  min_examples_required: 50
+  default_epochs: 3
+  default_lora_rank: 16
+  default_learning_rate: 0.0002
+  early_stop_patience: 50
+  eval_sample_size: 20
+
+observability:
+  log_level: INFO
+  structured_logging: true
+  trace_llm_calls: true
+  metrics_port: 9090
+  health_check_port: 8080
+
+cache:
+  llm_response_ttl_seconds: 3600
+  tool_result_ttl_seconds: 1800
+  github_profile_ttl_seconds: 86400
+  kaggle_profile_ttl_seconds: 86400
+
+learning:
+  default_duration_weeks: 12
+  default_hours_per_week: 10
+  max_hours_per_week: 20
+  review_week_interval: 4
+  min_examples_before_finetune: 50
