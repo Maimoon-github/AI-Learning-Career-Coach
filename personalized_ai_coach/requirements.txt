@@ -5,6 +5,7 @@ langchain-community>=0.3.0
 langchain-ollama>=0.2.0
 langchain-openai>=0.2.0
 langsmith>=0.1.0
+streamlit>=1.35.0
 
 # CrewAI
 crewai>=1.12.0

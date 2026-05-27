@@ -56,6 +56,9 @@ python main.py start \
 
 # With voice interface
 python main.py start --user-id alice --target-role "ML Engineer" --voice
+
+# Start the Web GUI (Streamlit)
+streamlit run app.py
 ```
 
 ## Running Tests
