@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import date, timedelta
 from typing import Any
 
 import structlog
@@ -34,9 +35,10 @@ class GitHubTool(BaseTool):
             from github import Github, GithubException
 
             token = os.getenv("GITHUB_TOKEN")
-            g = Github(token)
+            if not token:
+                log.warning("No GITHUB_TOKEN set, using unauthenticated (rate limited)")
+            g = Github(token) if token else Github()
 
-            # Extract username from URL or use directly
             username = github_url.rstrip("/").split("/")[-1]
             if github_url.startswith("http"):
                 username = github_url.split("github.com/")[-1].rstrip("/")
@@ -44,7 +46,6 @@ class GitHubTool(BaseTool):
             user = g.get_user(username)
             repos = list(user.get_repos(type="owner", sort="updated"))[:max_repos]
 
-            # Language aggregation
             lang_bytes: dict[str, int] = {}
             frameworks: set[str] = set()
             key_projects = []
@@ -59,7 +60,6 @@ class GitHubTool(BaseTool):
                 except GithubException:
                     pass
 
-                # Framework detection from topics and description
                 topics = repo.get_topics()
                 frameworks.update(t for t in topics if t not in ("python", "javascript"))
 
@@ -67,7 +67,7 @@ class GitHubTool(BaseTool):
                     key_projects.append({
                         "name": repo.name,
                         "description": repo.description or "",
-                        "tech_stack": topics,
+                        "tech_stack": list(topics)[:10],
                         "stars": repo.stargazers_count,
                         "size_kb": repo.size,
                         "last_updated": repo.updated_at.isoformat() if repo.updated_at else None,
@@ -88,7 +88,6 @@ class GitHubTool(BaseTool):
                 )
                 streak = 0
                 if push_dates:
-                    from datetime import date, timedelta
                     check_date = push_dates[0]
                     for d in push_dates:
                         if d >= check_date - timedelta(days=streak + 1):
@@ -103,7 +102,7 @@ class GitHubTool(BaseTool):
             log.info("github_analysis_complete", username=username, repos_analyzed=len(repos))
             return {
                 "languages": language_percentages,
-                "frameworks": sorted(frameworks),
+                "frameworks": sorted(frameworks)[:20],
                 "contribution_streak_days": streak,
                 "project_complexity_score": round(complexity_score, 1),
                 "key_projects": key_projects[:10],
