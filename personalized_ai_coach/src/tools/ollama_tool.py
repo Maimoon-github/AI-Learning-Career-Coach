@@ -58,8 +58,9 @@ class OllamaTool(BaseTool):
                     return {"status": "deleted", "model": model_name}
                 elif action == "fine_tuning_dry_run":
                     # Validate that required models exist
-                    models_r = await client.get(f"{base_url}/api/tags")
-                    models = [m["name"] for m in models_r.json().get("models", [])]
+                    resp = await client.get(f"{base_url}/api/tags")
+                    data = resp.json()
+                    models = [m["name"] for m in data.get("models", [])]
                     required = ["llama3.2:3b", "llama3.1:70b"]
                     missing = [m for m in required if m not in models]
                     if missing:

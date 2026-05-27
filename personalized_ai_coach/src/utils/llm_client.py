@@ -6,8 +6,8 @@ from typing import Any, AsyncIterator, Optional
 import httpx
 import structlog
 from cachetools import TTLCache
-from langchain_ollama import OllamaLLM
-from langchain_core.language_models.llms import BaseLLM
+from langchain_ollama import ChatOllama
+from langchain_core.language_models.chat_models import BaseChatModel
 
 log = structlog.get_logger(__name__)
 
@@ -36,14 +36,14 @@ class OllamaClient:
         if hasattr(self, "_initialized") and self._initialized:
             return
         self.base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        self._clients: dict[str, BaseLLM] = {}
+        self._clients: dict[str, BaseChatModel] = {}
         self._response_cache = TTLCache(maxsize=1000, ttl=3600)  # 1 hour
         self._initialized = True
 
-    def _get_llm(self, model: str, temperature: float = 0.2) -> BaseLLM:
+    def _get_llm(self, model: str, temperature: float = 0.2) -> BaseChatModel:
         key = f"{model}:{temperature}"
         if key not in self._clients:
-            self._clients[key] = OllamaLLM(
+            self._clients[key] = ChatOllama(
                 base_url=self.base_url,
                 model=model,
                 temperature=temperature,
@@ -51,7 +51,7 @@ class OllamaClient:
             )
         return self._clients[key]
 
-    def get_llm_for_task(self, task_type: str) -> BaseLLM:
+    def get_llm_for_task(self, task_type: str) -> BaseChatModel:
         model = TASK_MODEL_MAP.get(task_type, "llama3.2:3b")
         temperature = 0.7 if task_type == "motivational_framing" else 0.2
         return self._get_llm(model, temperature)
@@ -71,8 +71,6 @@ class OllamaClient:
         response = await llm.ainvoke(prompt)
         duration = time.perf_counter() - start
         
-        # Note: metrics exporter imports are omitted here to avoid other circulars if they exist, 
-        # but in a real app you'd log them.
         log.debug("llm_generated", model=model, duration=duration)
         
         self._response_cache[key] = response
@@ -85,7 +83,6 @@ class OllamaClient:
 
     def health_check(self) -> bool:
         try:
-            # Synchronous check for health_check
             with httpx.Client(timeout=5) as client:
                 response = client.get(f"{self.base_url}/api/tags")
                 return response.status_code == 200
@@ -93,6 +90,8 @@ class OllamaClient:
             log.error("ollama_health_failed", error=str(e))
             return False
 
-def get_llm(task_type: str = "structured_extraction") -> BaseLLM:
-    """Helper for CrewAI agents to get a configured LLM."""
-    return OllamaClient().get_llm_for_task(task_type)
+def get_llm(task_type: str = "structured_extraction") -> Any:
+    """Helper for CrewAI agents to get a configured LLM identifier."""
+    model = TASK_MODEL_MAP.get(task_type, "llama3.2:3b")
+    # Return string format for CrewAI compatibility to avoid type validation issues
+    return f"ollama/{model}"

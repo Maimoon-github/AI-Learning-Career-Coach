@@ -70,7 +70,8 @@ def test_learning_path_generation_crew_handoff(mock_llm, mock_tools):
 
 def test_project_generation_crew_produces_list(mock_llm, mock_tools):
     sample_projects = [
-        {"title": "Project 1", "description": "Desc", "problem_statement": "Problem",
+        {"title": "Project 1", "description": "Detailed description of project 1 with more than ten characters.",
+         "problem_statement": "Detailed problem statement for project 1 with more than ten characters.",
          "primary_skill": "Python", "requirements": ["req1"], "acceptance_criteria": ["crit1"],
          "estimated_hours": 10, "artifact_type": "API", "difficulty": 3, "created_at": "2025-01-01T00:00:00"}
     ]
@@ -84,11 +85,16 @@ def test_project_generation_crew_produces_list(mock_llm, mock_tools):
 
 
 def test_llm_fine_tuning_crew_status(mock_llm, mock_tools):
-    with patch("crewai.Crew.kickoff") as mock_kickoff, patch("tempfile.NamedTemporaryFile"):
-        mock_kickoff.return_value.raw = json.dumps({"status": "dry_run_success", "sample_notes_used": 10})
-        crew = LLMFineTuningCrew("test", ["note1", "note2"], base_model="llama3.2:3b")
-        result = crew.kickoff()
-        assert result.get("status") == "dry_run_success"
+    with patch("crewai.Crew.kickoff") as mock_kickoff, \
+         patch("tempfile.NamedTemporaryFile") as mock_temp:
+        mock_file = MagicMock()
+        mock_file.name = "test_file.json"
+        mock_temp.return_value.__enter__.return_value = mock_file
+        with patch("os.unlink"):
+            mock_kickoff.return_value.raw = json.dumps({"status": "dry_run_success", "sample_notes_used": 10})
+            crew = LLMFineTuningCrew("test", ["note1", "note2"], base_model="llama3.2:3b")
+            result = crew.kickoff()
+            assert result.get("status") == "dry_run_success"
 
 
 def test_progress_reporting_crew_output(mock_llm, mock_tools):

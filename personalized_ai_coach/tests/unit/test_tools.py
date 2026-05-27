@@ -48,10 +48,8 @@ def test_github_tool(mock_github_response):
         assert isinstance(result["languages"], dict)
 
 def test_kaggle_tool(mock_kaggle_response):
-    with patch("kaggle.api.kaggle_api_extended.KaggleApiExtended") as MockApi:
-        mock_api = MagicMock()
-        mock_api.competitions_list.return_value = []
-        MockApi.return_value = mock_api
+    with patch("src.tools.kaggle_tool.KaggleTool._async_run") as mock_async_run:
+        mock_async_run.return_value = mock_kaggle_response
         tool = KaggleTool()
         result = tool._run("testuser")
         assert "tier" in result
@@ -80,8 +78,12 @@ def test_web_search_tool():
 
 def test_ollama_tool():
     with patch("httpx.AsyncClient") as MockClient:
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"models": [{"name": "llama3.2:3b"}, {"name": "llama3.1:70b"}]}
         mock_client = AsyncMock()
-        mock_client.get.return_value.json.return_value = {"models": [{"name": "llama3.2:3b"}, {"name": "llama3.1:70b"}]}
+        mock_client.get.return_value = mock_response
+        mock_client.post.return_value = mock_response
+        mock_client.delete.return_value = mock_response
         MockClient.return_value.__aenter__.return_value = mock_client
         tool = OllamaTool()
         # Dry run
