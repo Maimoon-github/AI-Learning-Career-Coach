@@ -1,0 +1,9 @@
+[server]
+runOnSave = true
+
+[browser]
+gatherUsageStats = false
+
+[runner]
+# This prevents Streamlit from recursively watching huge library folders
+magicEnabled = false
