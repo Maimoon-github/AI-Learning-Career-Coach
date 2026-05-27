@@ -1,6 +1,0 @@
-# Ignore database files and vector store contents
-*.db
-chroma/*
-!chroma/.gitkeep
-training/*
-!training/.gitkeep

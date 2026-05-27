@@ -1,2 +1,0 @@
-"""Manual report trigger."""
-

@@ -1,2 +1,0 @@
-"""One-time profile ingestion."""
-
