@@ -1,0 +1,229 @@
+# Stage 1 — Extract & Analyze
+
+## Key Findings from Documents
+
+**System scope:** A production-grade multi-agent system combining LangGraph (workflow orchestration) + CrewAI (collaborative agent teams) + Ollama (local LLM serving), with a full-duplex voice interface and HITL gates.
+
+**Deliverables identified (grouped):**
+
+| Category | Components |
+|---|---|
+| **Root artifacts** | `.env`, `README.md`, `requirements.txt`, `main.py` |
+| **Configuration** | 4 YAML files (agents, tasks, llm_config, system_settings) |
+| **Data models** | 3 Pydantic schemas + `AgentState` (TypedDict) |
+| **Custom tools** | 5 tools (GitHub, Kaggle, web_search, document_parser, Ollama) |
+| **Services** | STT, TTS, audio_stream_handler, db_manager, S3 manager |
+| **Utilities** | data_preprocessing, llm_client, error_handling |
+| **CrewAI crews** | 6 crews (Profile, SkillGap, LearningPath, Project, FineTuning, ProgressReporting) |
+| **LangGraph nodes** | 7 nodes + graph.py + state.py |
+| **Tests** | Unit (nodes, agents, tools) + Integration (full workflow) |
+| **Infra/Scripts** | `setup_ollama.sh`, `deploy.sh`, docker-compose |
+| **Observability** | LangSmith tracing, Prometheus metrics, structlog |
+| **Docs/Notebooks** | architecture_document.md, fine-tuning experiment notebook |
+
+**Hard constraints discovered:**
+- `project_generation` + `llm_fine_tuning` must run in parallel (asyncio.gather) → both depend on `learning_path` and both block `progress_report`.
+- HITL gate uses LangGraph `interrupt()` — needs checkpoint persistence (Redis/Postgres) to be operational first.
+- LLM routing requires two Ollama models pulled (`llama3.2:3b` and `llama3.1:70b`) — large model pull is bandwidth-sensitive.
+- Retry policy: ×3 exponential backoff on tool/crew errors; ValidationError triggers re-prompt — this must be wired into the error_handling module before crews are integration-tested.
+
+**Assumptions made (not explicit in docs):**
+1. Team of 3–5 engineers (backend, ML, voice/infra).
+2. Kickoff Monday **2026-06-01**; 5-day work week.
+3. Foundation work (env, Ollama, Docker, models, configs) is fully prerequisite before crew work begins.
+4. Crew development can start in parallel once tools + LLM client are stable.
+5. LangGraph nodes are largely thin wrappers around crews, so node work begins when its corresponding crew is ~70% complete.
+6. Voice interface (STT/TTS/audio stream) is developed in parallel with crews because it touches no crew internals.
+7. UAT/HITL hardening rolls into the integration phase.
+
+**Missing info inferred:**
+- No explicit release date → set as **2026-10-02** (≈ 18 weeks).
+- No team allocation table → resources assigned by role below.
+- No mention of CI/CD pipeline → folded into Deployment phase.
+
+---
+
+# Stage 2 — Structure & Schedule
+
+## Work Breakdown Structure
+
+| WBS | Task | Duration | Start | End | Predecessors | Resources |
+|---|---|---|---|---|---|---|
+| **1** | **Foundation & Infrastructure** | | | | | |
+| 1.1 | Repo scaffold, `.env`, `requirements.txt` | 2d | 2026-06-01 | 2026-06-02 | — | DevOps |
+| 1.2 | `setup_ollama.sh` + pull llama3.2:3b & llama3.1:70b | 3d | 2026-06-03 | 2026-06-05 | 1.1 | DevOps, ML |
+| 1.3 | Postgres + Redis via docker-compose | 3d | 2026-06-03 | 2026-06-05 | 1.1 | DevOps |
+| 1.4 | README + architecture_document.md skeleton | 2d | 2026-06-08 | 2026-06-09 | 1.1 | Tech Lead |
+| 1.5 | ◆ **M1: Foundation Ready** | 0d | 2026-06-09 | 2026-06-09 | 1.2, 1.3, 1.4 | — |
+| **2** | **Schemas, Config & Utilities** | | | | | |
+| 2.1 | Pydantic models (skill, learning_path, project) | 3d | 2026-06-10 | 2026-06-12 | 1.5 | Backend |
+| 2.2 | `state.py` AgentState (TypedDict + add_messages) | 2d | 2026-06-10 | 2026-06-11 | 1.5 | Backend |
+| 2.3 | YAML configs (agents, tasks, llm_config, system_settings) | 3d | 2026-06-12 | 2026-06-16 | 2.1 | Tech Lead |
+| 2.4 | `error_handling.py` taxonomy + retry decorators | 3d | 2026-06-15 | 2026-06-17 | 2.2 | Backend |
+| 2.5 | `llm_client.py` (Ollama singleton, routing) | 3d | 2026-06-17 | 2026-06-19 | 2.3, 2.4 | ML |
+| 2.6 | `data_preprocessing.py` helpers | 2d | 2026-06-18 | 2026-06-19 | 2.4 | Backend |
+| 2.7 | ◆ **M2: Core Layer Ready** | 0d | 2026-06-19 | 2026-06-19 | 2.5, 2.6 | — |
+| **3** | **Custom Tools** | | | | | |
+| 3.1 | `github_tool.py` | 3d | 2026-06-22 | 2026-06-24 | 2.7 | Backend |
+| 3.2 | `kaggle_tool.py` | 3d | 2026-06-22 | 2026-06-24 | 2.7 | Backend |
+| 3.3 | `document_parser_tool.py` (PDF/MD/TXT) | 3d | 2026-06-25 | 2026-06-29 | 2.7 | ML |
+| 3.4 | `web_search_tool.py` (Tavily/DuckDuckGo) | 2d | 2026-06-25 | 2026-06-26 | 2.7 | Backend |
+| 3.5 | `ollama_tool.py` (fine-tune jobs) | 3d | 2026-06-29 | 2026-07-01 | 2.5 | ML |
+| 3.6 | Tool unit tests | 3d | 2026-07-02 | 2026-07-06 | 3.1-3.5 | QA |
+| 3.7 | ◆ **M3: Tools Ready** | 0d | 2026-07-06 | 2026-07-06 | 3.6 | — |
+| **4** | **Services Layer** *(parallel track)* | | | | | |
+| 4.1 | `db_manager.py` (LangGraph checkpointer) | 4d | 2026-06-22 | 2026-06-25 | 1.5 | Backend |
+| 4.2 | `s3_manager.py` for uploads | 2d | 2026-06-26 | 2026-06-29 | 4.1 | Backend |
+| 4.3 | `stt_service.py` | 4d | 2026-06-22 | 2026-06-25 | 1.5 | Voice/ML |
+| 4.4 | `tts_service.py` | 4d | 2026-06-26 | 2026-07-01 | 4.3 | Voice/ML |
+| 4.5 | `audio_stream_handler.py` (WebRTC/Twilio) | 5d | 2026-07-02 | 2026-07-08 | 4.4 | Voice/ML |
+| **5** | **CrewAI Crews** | | | | | |
+| 5.1 | `ProfileAnalysisCrew` (4 agents, sequential) | 4d | 2026-07-07 | 2026-07-10 | 3.7 | ML |
+| 5.2 | `SkillGapAssessmentCrew` | 3d | 2026-07-13 | 2026-07-15 | 5.1 | ML |
+| 5.3 | `LearningPathGenerationCrew` | 5d | 2026-07-16 | 2026-07-22 | 5.2 | ML |
+| 5.4 | `ProjectGenerationCrew` | 4d | 2026-07-23 | 2026-07-28 | 5.3 | ML |
+| 5.5 | `LLMFineTuningCrew` | 5d | 2026-07-23 | 2026-07-29 | 5.3 | ML |
+| 5.6 | `ProgressReportingCrew` | 3d | 2026-07-30 | 2026-08-03 | 5.4, 5.5 | Backend |
+| 5.7 | Crew unit tests | 4d | 2026-08-04 | 2026-08-07 | 5.6 | QA |
+| 5.8 | ◆ **M4: All Crews Operational** | 0d | 2026-08-07 | 2026-08-07 | 5.7 | — |
+| **6** | **LangGraph Workflow** | | | | | |
+| 6.1 | `graph.py` (state machine + conditional routing) | 4d | 2026-08-10 | 2026-08-13 | 5.8 | Backend |
+| 6.2 | `profile_ingestion_node` | 2d | 2026-08-14 | 2026-08-17 | 6.1 | Backend |
+| 6.3 | `skill_assessment_node` | 2d | 2026-08-18 | 2026-08-19 | 6.2 | Backend |
+| 6.4 | `learning_path_node` | 3d | 2026-08-20 | 2026-08-24 | 6.3 | Backend |
+| 6.5 | `project_generation_node` *(parallel branch)* | 2d | 2026-08-25 | 2026-08-26 | 6.4 | Backend |
+| 6.6 | `llm_fine_tuning_node` *(parallel branch)* | 3d | 2026-08-25 | 2026-08-27 | 6.4 | ML |
+| 6.7 | `progress_report_node` | 2d | 2026-08-28 | 2026-08-31 | 6.5, 6.6 | Backend |
+| 6.8 | `hitl_node` (interrupt + resume) | 3d | 2026-09-01 | 2026-09-03 | 6.7 | Backend |
+| 6.9 | Node unit tests | 3d | 2026-09-04 | 2026-09-08 | 6.8 | QA |
+| 6.10 | ◆ **M5: Workflow Operational** | 0d | 2026-09-08 | 2026-09-08 | 6.9 | — |
+| **7** | **Integration & Optimization** | | | | | |
+| 7.1 | `main.py` entry point + DI wiring | 2d | 2026-09-09 | 2026-09-10 | 6.10 | Tech Lead |
+| 7.2 | Voice interface ↔ LangGraph integration | 5d | 2026-09-11 | 2026-09-17 | 7.1, 4.5 | Voice/ML |
+| 7.3 | Async fan-out + caching + batching | 4d | 2026-09-14 | 2026-09-17 | 7.1 | Backend |
+| 7.4 | Full integration tests (`test_full_workflow.py`) | 5d | 2026-09-18 | 2026-09-24 | 7.2, 7.3 | QA |
+| 7.5 | ◆ **M6: System Integrated** | 0d | 2026-09-24 | 2026-09-24 | 7.4 | — |
+| **8** | **Observability & Hardening** | | | | | |
+| 8.1 | LangSmith tracing config | 2d | 2026-09-15 | 2026-09-16 | 7.1 | Tech Lead |
+| 8.2 | Prometheus metrics on :9090 | 3d | 2026-09-17 | 2026-09-21 | 8.1 | DevOps |
+| 8.3 | structlog JSON logging | 2d | 2026-09-22 | 2026-09-23 | 8.2 | Backend |
+| 8.4 | Fine-tuning experiment notebook | 4d | 2026-09-17 | 2026-09-22 | 5.5 | ML |
+| **9** | **Deployment** | | | | | |
+| 9.1 | `deploy.sh` + docker-compose finalization | 3d | 2026-09-25 | 2026-09-29 | 7.5, 8.3 | DevOps |
+| 9.2 | UAT + bug fixes | 3d | 2026-09-25 | 2026-09-29 | 7.5 | QA |
+| 9.3 | Production deployment | 2d | 2026-09-30 | 2026-10-01 | 9.1, 9.2 | DevOps |
+| 9.4 | Final documentation pass | 2d | 2026-09-30 | 2026-10-01 | 9.1 | Tech Lead |
+| 9.5 | ◆ **M7: Production Launch** | 0d | 2026-10-02 | 2026-10-02 | 9.3, 9.4 | — |
+
+## Critical Path
+
+`1.1 → 1.2 → M1 → 2.2 → 2.4 → 2.5 → M2 → 3.5 → 3.6 → M3 → 5.1 → 5.2 → 5.3 → 5.5 → 5.6 → 5.7 → M4 → 6.1 → 6.2 → 6.3 → 6.4 → 6.6 → 6.7 → 6.8 → 6.9 → M5 → 7.1 → 7.2 → 7.4 → M6 → 9.1 → 9.3 → M7`
+
+**Duration: ~88 working days (≈ 18 calendar weeks).**
+
+## Scheduling Risks
+
+1. **Llama3.1:70b pull (1.2)** — large model, network-bound; could slip 1–2 days. Buffer in Foundation.
+2. **`LLMFineTuningCrew` (5.5)** — depends on Ollama fine-tuning API stability; off-critical-path but feeds critical 5.6.
+3. **Voice interface (4.5)** — full-duplex audio is empirically fragile; 7.2 is on critical path.
+4. **HITL node (6.8)** — `interrupt()` semantics + Redis checkpoint replay is the most novel piece; allocate senior engineer.
+5. **Parallel branches 6.5/6.6** — join semantics in LangGraph must be tested early; risk of deadlock if both branches modify same state key.
+
+---
+
+# Stage 3 — Final Gantt Chart (Mermaid)
+
+```mermaid
+gantt
+    title Personalized AI Learning & Career Coach — Project Plan
+    dateFormat YYYY-MM-DD
+    axisFormat %b %d
+    excludes weekends
+
+    section 1. Foundation
+    Repo scaffold & deps           :a11, 2026-06-01, 2d
+    Ollama install + model pulls   :a12, after a11, 3d
+    Postgres + Redis stack         :a13, after a11, 3d
+    Docs skeleton                  :a14, 2026-06-08, 2d
+    M1 Foundation Ready            :milestone, m1, 2026-06-09, 0d
+
+    section 2. Schemas & Config
+    Pydantic models                :b21, after m1, 3d
+    AgentState schema              :b22, after m1, 2d
+    YAML configs                   :b23, after b21, 3d
+    Error handling module          :b24, after b22, 3d
+    LLM client (Ollama)            :b25, after b23 b24, 3d
+    Data preprocessing utils       :b26, after b24, 2d
+    M2 Core Layer Ready            :milestone, m2, 2026-06-19, 0d
+
+    section 3. Tools
+    github_tool                    :c31, after m2, 3d
+    kaggle_tool                    :c32, after m2, 3d
+    document_parser_tool           :c33, after c31, 3d
+    web_search_tool                :c34, after c31, 2d
+    ollama_tool                    :c35, after b25, 3d
+    Tool unit tests                :c36, after c33 c35, 3d
+    M3 Tools Ready                 :milestone, m3, 2026-07-06, 0d
+
+    section 4. Services (parallel)
+    db_manager                     :d41, after m1, 4d
+    s3_manager                     :d42, after d41, 2d
+    STT service                    :d43, after m1, 4d
+    TTS service                    :d44, after d43, 4d
+    Audio stream handler           :d45, after d44, 5d
+
+    section 5. CrewAI Crews
+    ProfileAnalysisCrew            :e51, after m3, 4d
+    SkillGapAssessmentCrew         :e52, after e51, 3d
+    LearningPathGenerationCrew     :e53, after e52, 5d
+    ProjectGenerationCrew          :e54, after e53, 4d
+    LLMFineTuningCrew              :e55, after e53, 5d
+    ProgressReportingCrew          :e56, after e54 e55, 3d
+    Crew unit tests                :e57, after e56, 4d
+    M4 Crews Operational           :milestone, m4, 2026-08-07, 0d
+
+    section 6. LangGraph Workflow
+    graph.py state machine         :f61, after m4, 4d
+    profile_ingestion_node         :f62, after f61, 2d
+    skill_assessment_node          :f63, after f62, 2d
+    learning_path_node             :f64, after f63, 3d
+    project_generation_node        :f65, after f64, 2d
+    llm_fine_tuning_node           :f66, after f64, 3d
+    progress_report_node           :f67, after f65 f66, 2d
+    hitl_node (interrupt/resume)   :crit, f68, after f67, 3d
+    Node unit tests                :f69, after f68, 3d
+    M5 Workflow Operational        :milestone, m5, 2026-09-08, 0d
+
+    section 7. Integration
+    main.py entry point            :g71, after m5, 2d
+    Voice ↔ LangGraph integration  :crit, g72, after g71 d45, 5d
+    Async/caching/batching         :g73, after g71, 4d
+    Full integration tests         :crit, g74, after g72 g73, 5d
+    M6 System Integrated           :milestone, m6, 2026-09-24, 0d
+
+    section 8. Observability
+    LangSmith tracing              :h81, after g71, 2d
+    Prometheus metrics             :h82, after h81, 3d
+    structlog JSON logging         :h83, after h82, 2d
+    Fine-tuning experiment NB      :h84, after e55, 4d
+
+    section 9. Deployment
+    deploy.sh + compose finalize   :i91, after m6 h83, 3d
+    UAT & bug fixes                :i92, after m6, 3d
+    Production deployment          :crit, i93, after i91 i92, 2d
+    Final documentation            :i94, after i91, 2d
+    M7 Production Launch           :milestone, m7, 2026-10-02, 0d
+```
+
+## Legend
+
+| Symbol | Meaning |
+|---|---|
+| `◆` / `milestone` | Phase-gate milestone (zero duration) |
+| `crit` | Task on the critical path |
+| `after X Y` | Finish-to-Start dependency on tasks X **and** Y (FS) |
+| Section blocks | WBS phase groupings (1 through 9) |
+| `excludes weekends` | Sat/Sun not counted in durations |
+
+**Total schedule: 2026-06-01 → 2026-10-02 (18 working weeks, ~88 business days).**
+**Critical path drivers:** Foundation → Schemas → Tools → Crews chain → LangGraph nodes → HITL → Integration → Voice integration → Integration tests → Production deploy.
