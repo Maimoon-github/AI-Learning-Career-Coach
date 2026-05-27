@@ -1,183 +1,116 @@
 from __future__ import annotations
 
 import asyncio
-import io
+import json
 import os
-import wave
-from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, AsyncGenerator, Callable, Optional
 
-import numpy as np
 import structlog
+from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
+from aiortc.contrib.media import MediaRelay
+from aiortc.mediastreams import AudioStreamTrack
+from av import AudioFrame
+
+from .stt_service import STTService
+from .tts_service import TTSService
 
 log = structlog.get_logger(__name__)
 
-SAMPLE_RATE = 16000
-FRAME_DURATION_MS = 30
-FRAME_SIZE = int(SAMPLE_RATE * FRAME_DURATION_MS / 1000)
-SILENCE_THRESHOLD_FRAMES = 30  # 900ms of silence = end of utterance
-
-
-# ── Speech-to-Text ────────────────────────────────────────────────────────────
-
-class STTService:
+class AudioStreamHandler:
     """
-    Real-time Speech-to-Text using OpenAI Whisper (local).
-    Implements voice activity detection (VAD) to segment utterances.
+    Full‑duplex WebRTC audio handler using aiortc.
+    Manages a single peer connection, forwards incoming audio to STT,
+    and sends synthesized audio from TTS back to the client.
     """
 
-    def __init__(self, model_size: str = "base") -> None:
-        self.model_size = model_size
-        self._model = None
+    def __init__(self, stt_service: STTService, tts_service: TTSService):
+        self.stt = stt_service
+        self.tts = tts_service
+        self.pc: Optional[RTCPeerConnection] = None
+        self.relay = MediaRelay()
+        self._audio_track: Optional[AudioStreamTrack] = None
+        self._tts_audio_queue: asyncio.Queue[bytes] = asyncio.Queue()
+        self._tasks: list[asyncio.Task] = []
 
-    def _load_model(self):
-        if self._model is None:
-            import whisper
-            log.info("stt.loading_model", size=self.model_size)
-            self._model = whisper.load_model(self.model_size)
-            log.info("stt.model_loaded")
-        return self._model
+    async def handle_offer(self, sdp: str, sdp_type: str = "offer") -> str:
+        """Process a WebRTC SDP offer, set up tracks, return answer."""
+        self.pc = RTCPeerConnection()
 
-    async def transcribe_audio(self, audio_bytes: bytes, language: str = "en") -> str:
-        """Transcribe raw PCM audio bytes to text."""
-        model = await asyncio.get_event_loop().run_in_executor(None, self._load_model)
+        @self.pc.on("track")
+        def on_track(track: MediaStreamTrack):
+            if track.kind == "audio":
+                log.info("audio_track_received")
+                self._audio_track = self.relay.subscribe(track)
+                # Launch STT processing
+                self._tasks.append(asyncio.create_task(self._process_incoming_audio()))
 
-        # Convert raw PCM to numpy float32
-        audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+        # Create an outgoing audio track that reads from TTS queue
+        outgoing_track = OutgoingAudioTrack(self._tts_audio_queue)
+        self.pc.addTrack(outgoing_track)
 
-        result = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: model.transcribe(audio_np, language=language, fp16=False),
-        )
-        text = result.get("text", "").strip()
-        log.info("stt.transcribed", text_length=len(text))
-        return text
+        await self.pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type=sdp_type))
+        answer = await self.pc.createAnswer()
+        await self.pc.setLocalDescription(answer)
+        return self.pc.localDescription.sdp
 
-    async def stream_transcribe(
-        self, audio_stream: AsyncGenerator[bytes, None]
-    ) -> AsyncGenerator[str, None]:
-        """
-        Consume a streaming audio source and yield partial transcriptions
-        at utterance boundaries (VAD-detected silence).
-        """
-        try:
-            import webrtcvad
-            vad = webrtcvad.Vad(3)  # Aggressiveness 3 = most aggressive filtering
-        except ImportError:
-            log.warning("webrtcvad_not_available", fallback="simple_chunking")
-            vad = None
+    async def _process_incoming_audio(self):
+        """Read PCM frames from the incoming audio track and feed to STT."""
+        if not self._audio_track:
+            return
+        # Wrapping the track as an async generator of AudioChunk
+        async def chunk_generator():
+            while True:
+                frame: AudioFrame = await self._audio_track.recv()
+                # Convert to 16kHz mono PCM (simplified)
+                yield AudioChunk(data=frame.to_ndarray().tobytes(), sample_rate=16000, encoding="pcm_s16le")
 
-        buffer = b""
-        silence_frames = 0
+        async for transcript in self.stt.transcribe_stream(chunk_generator()):
+            # Emit transcript event to LangGraph (via callback)
+            if self.on_transcript:
+                await self.on_transcript(transcript)
 
-        async for chunk in audio_stream:
-            buffer += chunk
+    async def send_tts_stream(self, text_stream: AsyncGenerator[str, None]):
+        """Feed a stream of text (e.g., from LLM) to TTS and queue audio for outgoing track."""
+        async for audio_chunk in self.tts.synthesize_stream(text_stream):
+            await self._tts_audio_queue.put(audio_chunk)
 
-            if vad:
-                # Process in 30ms frames for VAD
-                while len(buffer) >= FRAME_SIZE * 2:
-                    frame = buffer[: FRAME_SIZE * 2]
-                    buffer = buffer[FRAME_SIZE * 2 :]
-                    is_speech = vad.is_speech(frame, SAMPLE_RATE)
-                    if not is_speech:
-                        silence_frames += 1
-                    else:
-                        silence_frames = 0
+    async def close(self):
+        """Clean up peer connection and tasks."""
+        if self.pc:
+            await self.pc.close()
+        for task in self._tasks:
+            task.cancel()
+            await asyncio.gather(*self._tasks, return_exceptions=True)
 
-                    if silence_frames >= SILENCE_THRESHOLD_FRAMES and len(buffer) > 0:
-                        text = await self.transcribe_audio(buffer)
-                        if text:
-                            yield text
-                        buffer = b""
-                        silence_frames = 0
-            else:
-                # Fallback: yield every ~3 seconds of audio
-                if len(buffer) >= SAMPLE_RATE * 2 * 3:
-                    text = await self.transcribe_audio(buffer)
-                    if text:
-                        yield text
-                    buffer = b""
-
-        # Flush remaining buffer
-        if len(buffer) > SAMPLE_RATE * 2 * 0.5:  # At least 0.5s of audio
-            text = await self.transcribe_audio(buffer)
-            if text:
-                yield text
+    # Event callbacks (to be set by main.py)
+    on_transcript: Optional[Callable[[str], Awaitable[None]]] = None
+    on_error: Optional[Callable[[Exception], Awaitable[None]]] = None
 
 
-# ── Text-to-Speech ────────────────────────────────────────────────────────────
+class OutgoingAudioTrack(AudioStreamTrack):
+    """Custom audio track that reads PCM chunks from a queue and frames them."""
 
-class TTSService:
-    """
-    Text-to-Speech synthesis. Uses TTS library (Coqui) for local synthesis.
-    Streams audio to output device for real-time playback.
-    """
+    def __init__(self, queue: asyncio.Queue[bytes]):
+        super().__init__()
+        self.queue = queue
+        self._timestamp = 0
+        self._sample_rate = 16000
+        self._channels = 1
 
-    def __init__(self, model_name: str = "tts_models/en/ljspeech/tacotron2-DDC") -> None:
-        self.model_name = model_name
-        self._tts = None
+    async def recv(self):
+        data = await self.queue.get()
+        # Create an AudioFrame
+        frame = AudioFrame(format="s16", layout="mono", samples=len(data)//2)
+        frame.planes[0].update(data)
+        frame.sample_rate = self._sample_rate
+        frame.time_base = 1 / self._sample_rate
+        frame.pts = self._timestamp
+        self._timestamp += frame.samples
+        return frame
 
-    def _load_tts(self):
-        if self._tts is None:
-            try:
-                from TTS.api import TTS
-                log.info("tts.loading_model", model=self.model_name)
-                self._tts = TTS(model_name=self.model_name, progress_bar=False)
-                log.info("tts.model_loaded")
-            except ImportError:
-                log.warning("TTS_library_not_available")
-        return self._tts
-
-    async def synthesize(self, text: str) -> bytes:
-        """Convert text to WAV audio bytes."""
-        tts = await asyncio.get_event_loop().run_in_executor(None, self._load_tts)
-        if tts is None:
-            return b""
-
-        def _synth():
-            buf = io.BytesIO()
-            tts.tts_to_file(text=text, file_path=buf)
-            buf.seek(0)
-            return buf.read()
-
-        audio_bytes = await asyncio.get_event_loop().run_in_executor(None, _synth)
-        log.info("tts.synthesized", text_length=len(text), audio_bytes=len(audio_bytes))
-        return audio_bytes
-
-    async def stream_speak(self, text_stream: AsyncGenerator[str, None]) -> None:
-        """
-        Consume a streaming text source and play audio in near-real-time.
-        Buffers text by sentence boundary before synthesis to reduce latency.
-        """
-        import sounddevice as sd
-
-        sentence_buffer = ""
-        async for chunk in text_stream:
-            sentence_buffer += chunk
-            # Synthesize and play at sentence boundaries
-            if any(sentence_buffer.rstrip().endswith(p) for p in (".", "!", "?")):
-                if sentence_buffer.strip():
-                    audio = await self.synthesize(sentence_buffer.strip())
-                    if audio:
-                        await self._play_audio(audio)
-                sentence_buffer = ""
-
-        # Flush remaining text
-        if sentence_buffer.strip():
-            audio = await self.synthesize(sentence_buffer.strip())
-            if audio:
-                await self._play_audio(audio)
-
-    async def _play_audio(self, wav_bytes: bytes) -> None:
-        """Play WAV bytes through the default audio output device."""
-        try:
-            import sounddevice as sd
-
-            def _play():
-                with wave.open(io.BytesIO(wav_bytes)) as wf:
-                    audio_np = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
-                    sd.play(audio_np, samplerate=wf.getframerate(), blocking=True)
-
-            await asyncio.get_event_loop().run_in_executor(None, _play)
-        except Exception as exc:
-            log.error("audio_playback_error", error=str(exc))
+class AudioChunk:
+    """Simple container for audio data from WebRTC."""
+    def __init__(self, data: bytes, sample_rate: int, encoding: str):
+        self.data = data
+        self.sample_rate = sample_rate
+        self.encoding = encoding

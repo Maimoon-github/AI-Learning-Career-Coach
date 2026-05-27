@@ -17,6 +17,28 @@ from langgraph.checkpoint.redis import RedisSaver
 from langgraph.graph import StateGraph, END
 from typing import TypedDict, Optional
 import uvicorn
+# ... after loading services
+from src.services.database.db_manager import init_db, health_check as db_health
+from src.services.storage.s3_manager import S3Manager
+from src.services.voice_interface.stt_service import STTService
+from src.services.voice_interface.tts_service import TTSService
+from src.services.voice_interface.audio_stream_handler import AudioStreamHandler
+
+# At startup (inside lifespan)
+await init_db()
+s3 = S3Manager()
+stt = STTService()
+tts = TTSService()
+audio_handler = AudioStreamHandler(stt, tts)
+
+# Healthcheck endpoint already exists; extend it
+@fastapi_app.get("/health")
+async def healthcheck():
+    # ... existing DB/Redis checks ...
+    s3_ok = await s3.health_check()
+    stt_ok = stt.api_key is not None  # simple
+    tts_ok = tts.api_key is not None or hasattr(tts, "_coqui_model")
+    # ... aggregate status
 
 # Load environment from .env
 load_dotenv()
