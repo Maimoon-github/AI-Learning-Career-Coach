@@ -70,23 +70,3 @@ class LearningPath(BaseModel):
 
     def skills_in_scope(self) -> list[str]:
         return list({w.primary_skill for w in self.weeks})
-
-
-class ProjectSpec(BaseModel):
-    title: str
-    description: str
-    problem_statement: str
-    primary_skill: str
-    secondary_skills: list[str] = Field(default_factory=list)
-    requirements: list[str] = Field(default_factory=list)
-    acceptance_criteria: list[str] = Field(default_factory=list)
-    tech_stack: dict[str, str] = Field(default_factory=dict)  # component -> version
-    estimated_hours: float = Field(gt=0)
-    artifact_type: str  # API | notebook | CLI | web-app | model
-    difficulty: int = Field(ge=1, le=5)
-    deliverables: list[str] = Field(default_factory=list)
-    anti_goals: list[str] = Field(default_factory=list)
-    stretch_goals: list[str] = Field(default_factory=list)
-    suggested_file_structure: dict[str, Any] = Field(default_factory=dict)
-    calibration_notes: str = ""
-    created_at: datetime = Field(default_factory=datetime.utcnow)
