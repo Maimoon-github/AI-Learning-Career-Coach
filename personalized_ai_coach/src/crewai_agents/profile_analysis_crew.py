@@ -6,28 +6,19 @@ from typing import Any
 import structlog
 import yaml
 from crewai import Agent, Crew, Process, Task
-from crewai.agents.agent_builder.base_agent import BaseAgent
 
+from src.models.skill_profile_model import SkillProfile
 from src.tools.github_tool import GitHubTool
-from src.tools.tools import DocumentParserTool, KaggleTool
+from src.tools.kaggle_tool import KaggleTool
+from src.tools.document_parser_tool import DocumentParserTool
 from src.utils.llm_client import get_llm
+from src.utils.error_handling import CrewExecutionError, ValidationError
 
 log = structlog.get_logger(__name__)
 
 
-def _load_config(section: str) -> tuple[dict, dict]:
-    with open("config/agents.yaml") as f:
-        agents_cfg = yaml.safe_load(f)[section]
-    with open("config/tasks.yaml") as f:
-        tasks_cfg = yaml.safe_load(f)[section]
-    return agents_cfg, tasks_cfg
-
-
 class ProfileAnalysisCrew:
-    """
-    Orchestrates GitHub Analyst, Kaggle Analyst, Document Processor, and
-    Profile Synthesizer to produce a unified SkillProfile JSON.
-    """
+    """Sequential crew: GitHub Analyst, Kaggle Analyst, Document Processor, Profile Synthesizer."""
 
     def __init__(
         self,
@@ -41,133 +32,118 @@ class ProfileAnalysisCrew:
         self.kaggle_username = kaggle_username
         self.document_paths = document_paths or []
 
-        agents_cfg, self.tasks_cfg = _load_config("profile_analysis")
-        llm = get_llm("structured_extraction")
+        with open("config/agents.yaml") as f:
+            agents_cfg = yaml.safe_load(f)["profile_analysis"]
+        with open("config/tasks.yaml") as f:
+            self.tasks_cfg = yaml.safe_load(f)["profile_analysis"]
 
-        github_tool = GitHubTool()
-        kaggle_tool = KaggleTool()
-        doc_tool = DocumentParserTool()
+        llm = get_llm("structured_extraction")
 
         self.github_analyst = Agent(
             role=agents_cfg["github_analyst"]["role"],
             goal=agents_cfg["github_analyst"]["goal"],
             backstory=agents_cfg["github_analyst"]["backstory"],
             llm=llm,
-            tools=[github_tool],
-            verbose=agents_cfg["github_analyst"]["verbose"],
-            allow_delegation=agents_cfg["github_analyst"]["allow_delegation"],
+            tools=[GitHubTool()],
+            verbose=agents_cfg["github_analyst"].get("verbose", False),
+            allow_delegation=agents_cfg["github_analyst"].get("allow_delegation", False),
             max_iter=3,
         )
-
         self.kaggle_analyst = Agent(
             role=agents_cfg["kaggle_analyst"]["role"],
             goal=agents_cfg["kaggle_analyst"]["goal"],
             backstory=agents_cfg["kaggle_analyst"]["backstory"],
             llm=llm,
-            tools=[kaggle_tool],
-            verbose=agents_cfg["kaggle_analyst"]["verbose"],
-            allow_delegation=agents_cfg["kaggle_analyst"]["allow_delegation"],
+            tools=[KaggleTool()],
+            verbose=agents_cfg["kaggle_analyst"].get("verbose", False),
+            allow_delegation=agents_cfg["kaggle_analyst"].get("allow_delegation", False),
             max_iter=3,
         )
-
-        self.document_processor = Agent(
+        self.doc_processor = Agent(
             role=agents_cfg["document_processor"]["role"],
             goal=agents_cfg["document_processor"]["goal"],
             backstory=agents_cfg["document_processor"]["backstory"],
             llm=llm,
-            tools=[doc_tool],
-            verbose=agents_cfg["document_processor"]["verbose"],
-            allow_delegation=agents_cfg["document_processor"]["allow_delegation"],
+            tools=[DocumentParserTool()],
+            verbose=agents_cfg["document_processor"].get("verbose", False),
+            allow_delegation=agents_cfg["document_processor"].get("allow_delegation", False),
             max_iter=3,
         )
-
-        self.profile_synthesizer = Agent(
+        self.synthesizer = Agent(
             role=agents_cfg["profile_synthesizer"]["role"],
             goal=agents_cfg["profile_synthesizer"]["goal"],
             backstory=agents_cfg["profile_synthesizer"]["backstory"],
             llm=get_llm("structured_extraction"),
             tools=[],
-            verbose=agents_cfg["profile_synthesizer"]["verbose"],
-            allow_delegation=agents_cfg["profile_synthesizer"]["allow_delegation"],
+            verbose=agents_cfg["profile_synthesizer"].get("verbose", False),
+            allow_delegation=agents_cfg["profile_synthesizer"].get("allow_delegation", False),
             max_iter=5,
         )
 
     def _build_tasks(self) -> list[Task]:
         tasks = []
-        task_agents = []
-
         if self.github_url:
-            t = Task(
+            tasks.append(Task(
                 description=self.tasks_cfg["github_analysis"]["description"].format(
                     github_url=self.github_url, user_id=self.user_id
                 ),
                 expected_output=self.tasks_cfg["github_analysis"]["expected_output"],
                 agent=self.github_analyst,
-            )
-            tasks.append(t)
-            task_agents.append(self.github_analyst)
-
+            ))
         if self.kaggle_username:
-            t = Task(
+            tasks.append(Task(
                 description=self.tasks_cfg["kaggle_analysis"]["description"].format(
                     kaggle_url=f"https://kaggle.com/{self.kaggle_username}",
                     user_id=self.user_id,
                 ),
                 expected_output=self.tasks_cfg["kaggle_analysis"]["expected_output"],
                 agent=self.kaggle_analyst,
-            )
-            tasks.append(t)
-            task_agents.append(self.kaggle_analyst)
-
+            ))
         if self.document_paths:
-            t = Task(
+            tasks.append(Task(
                 description=self.tasks_cfg["document_processing"]["description"].format(
                     user_id=self.user_id,
                     document_paths=", ".join(self.document_paths),
                 ),
                 expected_output=self.tasks_cfg["document_processing"]["expected_output"],
-                agent=self.document_processor,
-            )
-            tasks.append(t)
-            task_agents.append(self.document_processor)
-
-        # Synthesis always runs, uses context from above tasks
-        synthesis_task = Task(
+                agent=self.doc_processor,
+            ))
+        # Synthesis task uses context from all previous tasks
+        tasks.append(Task(
             description=self.tasks_cfg["profile_synthesis"]["description"],
             expected_output=self.tasks_cfg["profile_synthesis"]["expected_output"],
-            agent=self.profile_synthesizer,
-            context=tasks,  # Receives all prior task outputs
-        )
-        tasks.append(synthesis_task)
-        task_agents.append(self.profile_synthesizer)
-
+            agent=self.synthesizer,
+            context=tasks,
+        ))
         return tasks
 
     def kickoff(self) -> dict[str, Any]:
         tasks = self._build_tasks()
-        agents: list[BaseAgent] = [
-            self.github_analyst, self.kaggle_analyst,
-            self.document_processor, self.profile_synthesizer,
-        ]
-        # Only include agents that have tasks
-        active_agents = list({t.agent for t in tasks if t.agent})
-
+        active_agents = {t.agent for t in tasks}
         crew = Crew(
-            agents=active_agents,
+            agents=list(active_agents),
             tasks=tasks,
             process=Process.sequential,
             verbose=False,
             memory=True,
         )
-
         log.info("profile_crew_starting", user_id=self.user_id)
-        result = crew.kickoff(inputs={"user_id": self.user_id})
+        try:
+            result = crew.kickoff(inputs={"user_id": self.user_id})
+        except Exception as e:
+            raise CrewExecutionError(f"ProfileAnalysisCrew failed: {e}") from e
 
         raw = result.raw if hasattr(result, "raw") else str(result)
         try:
-            parsed = json.loads(raw) if isinstance(raw, str) else raw
+            output = json.loads(raw)
         except json.JSONDecodeError:
-            parsed = {"raw_output": raw}
+            output = {"raw_output": raw}
+
+        # Validate against Pydantic model
+        try:
+            SkillProfile.model_validate(output)
+        except Exception as e:
+            raise ValidationError(f"Profile output does not match schema: {e}") from e
 
         log.info("profile_crew_complete", user_id=self.user_id)
-        return parsed
+        return output
