@@ -5,40 +5,38 @@ from typing import Annotated, Any
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
-from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
 
 class AgentState(TypedDict):
-    # ── Identity ──────────────────────────────────────────────────────────────
+    # Identity
     user_id: str
     target_role: str
     session_id: str
 
-    # ── Inputs ────────────────────────────────────────────────────────────────
+    # Inputs
     github_profile_url: str | None
     kaggle_username: str | None
     uploaded_document_paths: list[str]
     session_notes: list[str]
 
-    # ── Crew outputs ─────────────────────────────────────────────────────────
-    skill_profile: dict[str, Any] | None          # SkillProfile.model_dump()
-    skill_gaps: list[dict[str, Any]]               # list[SkillGap.model_dump()]
-    learning_path: dict[str, Any] | None           # LearningPath.model_dump()
-    practice_projects: list[dict[str, Any]]        # list[ProjectSpec.model_dump()]
-    fine_tuning_status: str | None                 # pending|running|complete|failed
+    # Crew outputs
+    skill_profile: dict[str, Any] | None
+    skill_gaps: list[dict[str, Any]]
+    learning_path: dict[str, Any] | None
+    practice_projects: list[dict[str, Any]]
+    fine_tuning_status: str | None
     fine_tuning_metrics: dict[str, Any] | None
     weekly_report: dict[str, Any] | None
 
-    # ── Workflow control ─────────────────────────────────────────────────────
+    # Workflow control
     current_week: int
     revision_cycle: int
     user_feedback: str | None
-    hitl_action: str | None                        # approve|revise|end
+    hitl_action: str | None
     error_context: dict[str, Any] | None
 
-    # ── Conversation ─────────────────────────────────────────────────────────
-    # Uses LangGraph's built-in add_messages reducer for append semantics
+    # Conversation (LangGraph reducer)
     messages: Annotated[list[BaseMessage], add_messages]
 
 
@@ -50,7 +48,6 @@ def initial_state(
     kaggle_username: str | None = None,
     uploaded_document_paths: list[str] | None = None,
 ) -> AgentState:
-    """Return a fully-initialized AgentState with all required keys."""
     return AgentState(
         user_id=user_id,
         target_role=target_role,

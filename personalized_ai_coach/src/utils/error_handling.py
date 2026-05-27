@@ -1,94 +1,80 @@
-from __future__ import annotations
-
-import functools
 import asyncio
-from typing import Any, Callable, TypeVar
+import functools
+import logging
+from typing import Any, Callable, TypeVar, ParamSpec
 
-import structlog
+logger = logging.getLogger(__name__)
 
-log = structlog.get_logger(__name__)
+# Custom exceptions
+class ToolExecutionError(Exception):
+    """Raised when a tool (GitHub, Kaggle, web search) fails."""
+    pass
 
+class CrewExecutionError(Exception):
+    """Raised when a CrewAI crew fails after retries."""
+    pass
+
+class OllamaConnectionError(Exception):
+    """Raised when Ollama is unreachable or returns an error."""
+    pass
+
+class ValidationError(Exception):
+    """Raised when Pydantic validation fails on agent output."""
+    pass
+
+class HITLTimeoutError(Exception):
+    """Raised when a human-in-the-loop gate times out."""
+    pass
+
+P = ParamSpec("P")
 T = TypeVar("T")
 
-
-class CoachBaseError(Exception):
-    """Base error for all application errors."""
-    code: str = "UNKNOWN_ERROR"
-
-    def __init__(self, message: str, context: dict[str, Any] | None = None) -> None:
-        super().__init__(message)
-        self.context = context or {}
-
-
-class ToolExecutionError(CoachBaseError):
-    code = "TOOL_EXECUTION_ERROR"
-
-
-class ParsingError(CoachBaseError):
-    code = "PARSING_ERROR"
-
-
-class ContextLimitExceeded(CoachBaseError):
-    code = "CONTEXT_LIMIT_EXCEEDED"
-
-
-class CrewExecutionError(CoachBaseError):
-    code = "CREW_EXECUTION_ERROR"
-
-
-class ValidationError(CoachBaseError):
-    code = "VALIDATION_ERROR"
-
-
-class HITLTimeoutError(CoachBaseError):
-    code = "HITL_TIMEOUT"
-
-
-class OllamaConnectionError(CoachBaseError):
-    code = "OLLAMA_CONNECTION_ERROR"
-
-
-class FineTuningError(CoachBaseError):
-    code = "FINE_TUNING_ERROR"
-
-
-ERROR_TAXONOMY: dict[str, type[CoachBaseError]] = {
-    cls.code: cls  # type: ignore[attr-defined]
-    for cls in [
-        ToolExecutionError, ParsingError, ContextLimitExceeded,
-        CrewExecutionError, ValidationError, HITLTimeoutError,
-        OllamaConnectionError, FineTuningError,
-    ]
-}
-
-
-def with_retry(
+def retry_with_backoff(
     max_attempts: int = 3,
-    backoff_base: float = 2.0,
-    retriable_errors: tuple[type[Exception], ...] = (ToolExecutionError, CrewExecutionError),
-) -> Callable[[Callable[..., T]], Callable[..., T]]:
-    """Async retry decorator with exponential backoff."""
-    def decorator(fn: Callable[..., T]) -> Callable[..., T]:
-        @functools.wraps(fn)
-        async def wrapper(*args: Any, **kwargs: Any) -> T:
-            last_exc: Exception | None = None
+    initial_delay: float = 2.0,
+    backoff_multiplier: float = 2.0,
+    exceptions: tuple[type[Exception], ...] = (Exception,)
+) -> Callable[[Callable[P, T]], Callable[P, T]]:
+    """Decorator that retries a function with exponential backoff."""
+    def decorator(func: Callable[P, T]) -> Callable[P, T]:
+        @functools.wraps(func)
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
+            delay = initial_delay
             for attempt in range(1, max_attempts + 1):
                 try:
-                    return await fn(*args, **kwargs)
-                except retriable_errors as exc:
-                    last_exc = exc
-                    if attempt < max_attempts:
-                        delay = backoff_base ** (attempt - 1)
-                        log.warning(
-                            "retrying_after_error",
-                            fn=fn.__name__,
-                            attempt=attempt,
-                            delay=delay,
-                            error=str(exc),
-                        )
-                        await asyncio.sleep(delay)
-                except Exception:
-                    raise
-            raise last_exc  # type: ignore[misc]
-        return wrapper  # type: ignore[return-value]
+                    return func(*args, **kwargs)
+                except exceptions as e:
+                    if attempt == max_attempts:
+                        logger.error(f"Final attempt {attempt} failed: {e}")
+                        raise
+                    logger.warning(f"Attempt {attempt} failed: {e}. Retrying in {delay}s")
+                    time.sleep(delay)
+                    delay *= backoff_multiplier
+            raise RuntimeError("Unreachable")  # pragma: no cover
+        return wrapper
+    return decorator
+
+# Async version
+def async_retry_with_backoff(
+    max_attempts: int = 3,
+    initial_delay: float = 2.0,
+    backoff_multiplier: float = 2.0,
+    exceptions: tuple[type[Exception], ...] = (Exception,)
+) -> Callable[[Callable[P, T]], Callable[P, T]]:
+    def decorator(func: Callable[P, T]) -> Callable[P, T]:
+        @functools.wraps(func)
+        async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
+            delay = initial_delay
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    return await func(*args, **kwargs)
+                except exceptions as e:
+                    if attempt == max_attempts:
+                        logger.error(f"Final async attempt {attempt} failed: {e}")
+                        raise
+                    logger.warning(f"Async attempt {attempt} failed: {e}. Retrying in {delay}s")
+                    await asyncio.sleep(delay)
+                    delay *= backoff_multiplier
+            raise RuntimeError("Unreachable")
+        return wrapper
     return decorator
