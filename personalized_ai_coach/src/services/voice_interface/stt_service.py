@@ -10,7 +10,7 @@ import numpy as np
 import structlog
 import webrtcvad
 
-from .audio_stream_handler import AudioChunk
+from .audio_types import AudioChunk
 
 log = structlog.get_logger(__name__)
 

@@ -24,7 +24,6 @@ class WebSearchTool(BaseTool):
     )
     args_schema: type[BaseModel] = WebSearchInput
 
-    @lru_cache(maxsize=128)
     def _cached_search(self, query: str, max_results: int) -> tuple[tuple[dict[str, str], ...], str]:
         """Cache results for 1 hour (TTL handled by lru_cache with time-based invalidation)."""
         # Simple TTL: we'll rely on cachetools or manual timestamp; here we use lru_cache without TTL,

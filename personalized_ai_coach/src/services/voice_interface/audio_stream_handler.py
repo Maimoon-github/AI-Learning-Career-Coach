@@ -3,14 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from typing import Any, AsyncGenerator, Callable, Optional
+from typing import Any, AsyncGenerator, Callable, Optional, Awaitable
 
 import structlog
 from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
 from aiortc.contrib.media import MediaRelay
 from aiortc.mediastreams import AudioStreamTrack
 from av import AudioFrame
-
+from .audio_types import AudioChunk
 from .stt_service import STTService
 from .tts_service import TTSService
 
@@ -85,6 +85,31 @@ class AudioStreamHandler:
     # Event callbacks (to be set by main.py)
     on_transcript: Optional[Callable[[str], Awaitable[None]]] = None
     on_error: Optional[Callable[[Exception], Awaitable[None]]] = None
+    on_resume: Optional[Callable[[dict], Awaitable[None]]] = None
+
+    async def prompt_hitl(self, presentation: dict):
+        """Present HITL options via voice and collect user response."""
+        # Synthesise the report summary
+        report = presentation.get("weekly_report", {})
+        summary = f"Week {presentation.get('current_week')} is complete. {report.get('headline_stat', '')}"
+        await self.tts.synthesize_and_play(summary)
+        # Ask for decision
+        await self.tts.synthesize_and_play("Do you approve, revise, or end this session?")
+        # Listen for response
+        response = await self._listen_for_hitl_response()
+        # Resume workflow with user's decision
+        if self.on_resume:
+            await self.on_resume(response)
+
+    async def _listen_for_hitl_response(self) -> dict:
+        """Wait for STT to recognise approve/revise/end."""
+        # Simplified: would wait for a transcript from the STT stream
+        # For production, use a queue and a timeout
+        import asyncio
+        # In real implementation, this would listen to the STT stream.
+        # For demo, return a default.
+        await asyncio.sleep(0.5)
+        return {"hitl_action": "approve", "user_feedback": None}
 
 
 class OutgoingAudioTrack(AudioStreamTrack):
@@ -108,37 +133,5 @@ class OutgoingAudioTrack(AudioStreamTrack):
         self._timestamp += frame.samples
         return frame
 
-class AudioChunk:
-    """Simple container for audio data from WebRTC."""
-    def __init__(self, data: bytes, sample_rate: int, encoding: str):
-        self.data = data
-        self.sample_rate = sample_rate
-        self.encoding = encoding
 
-# Add to AudioStreamHandler class
-async def prompt_hitl(self, presentation: dict):
-    """Present HITL options via voice and collect user response."""
-    # Synthesise the report summary
-    report = presentation.get("weekly_report", {})
-    summary = f"Week {presentation.get('current_week')} is complete. {report.get('headline_stat', '')}"
-    await self.tts.synthesize_and_play(summary)
-    # Ask for decision
-    await self.tts.synthesize_and_play("Do you approve, revise, or end this session?")
-    # Listen for response
-    response = await self._listen_for_hitl_response()
-    # Resume workflow with user's decision
-    if self.on_resume:
-        await self.on_resume(response)
 
-async def _listen_for_hitl_response(self) -> dict:
-    """Wait for STT to recognise approve/revise/end."""
-    # Simplified: would wait for a transcript from the STT stream
-    # For production, use a queue and a timeout
-    import asyncio
-    # In real implementation, this would listen to the STT stream.
-    # For demo, return a default.
-    await asyncio.sleep(0.5)
-    return {"hitl_action": "approve", "user_feedback": None}
-
-# Add callback for resuming graph
-self.on_resume: Optional[Callable[[dict], Awaitable[None]]] = None

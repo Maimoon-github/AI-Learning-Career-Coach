@@ -21,7 +21,18 @@ class KaggleTool(BaseTool):
     args_schema: type[BaseModel] = KaggleInput
 
     def _run(self, username: str) -> dict[str, Any]:
-        return asyncio.get_event_loop().run_until_complete(self._async_run(username))
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        if loop.is_running():
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor() as executor:
+                return executor.submit(lambda: asyncio.run(self._async_run(username))).result()
+        else:
+            return loop.run_until_complete(self._async_run(username))
 
     async def _async_run(self, username: str) -> dict[str, Any]:
         try:

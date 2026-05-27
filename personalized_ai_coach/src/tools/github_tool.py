@@ -11,26 +11,11 @@ from pydantic import BaseModel, Field
 from cachetools import TTLCache
 import hashlib
 
-class GitHubTool(BaseTool):
-    def __init__(self):
-        self._cache = TTLCache(maxsize=100, ttl=3600)
-
-    async def _async_run(self, github_url: str, max_repos: int = 30) -> dict:
-        cache_key = hashlib.md5(f"{github_url}:{max_repos}".encode()).hexdigest()
-        if cache_key in self._cache:
-            return self._cache[cache_key]
-        # ... existing logic ...
-        result = {...}  # your existing return dict
-        self._cache[cache_key] = result
-        return result
-
 log = structlog.get_logger(__name__)
-
 
 class GitHubInput(BaseModel):
     github_url: str = Field(description="Full GitHub profile URL or username")
     max_repos: int = Field(default=30, description="Max repos to analyze")
-
 
 class GitHubTool(BaseTool):
     name: str = "github_profile_analyzer"
@@ -40,22 +25,37 @@ class GitHubTool(BaseTool):
     )
     args_schema: type[BaseModel] = GitHubInput
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._cache = TTLCache(maxsize=100, ttl=3600)
+
     def _run(self, github_url: str, max_repos: int = 30) -> dict[str, Any]:
-        return asyncio.get_event_loop().run_until_complete(
-            self._async_run(github_url, max_repos)
-        )
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        if loop.is_running():
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor() as executor:
+                return executor.submit(lambda: asyncio.run(self._async_run(github_url, max_repos))).result()
+        else:
+            return loop.run_until_complete(self._async_run(github_url, max_repos))
 
     async def _async_run(self, github_url: str, max_repos: int = 30) -> dict[str, Any]:
+        cache_key = hashlib.md5(f"{github_url}:{max_repos}".encode()).hexdigest()
+        if hasattr(self, "_cache") and cache_key in self._cache:
+            return self._cache[cache_key]
+
         try:
             from github import Github, GithubException
 
             token = os.getenv("GITHUB_TOKEN")
-            if not token:
-                log.warning("No GITHUB_TOKEN set, using unauthenticated (rate limited)")
             g = Github(token) if token else Github()
 
             username = github_url.rstrip("/").split("/")[-1]
-            if github_url.startswith("http"):
+            if "github.com/" in github_url:
                 username = github_url.split("github.com/")[-1].rstrip("/")
 
             user = g.get_user(username)
@@ -94,7 +94,6 @@ class GitHubTool(BaseTool):
                 for lang, count in sorted(lang_bytes.items(), key=lambda x: -x[1])
             }
 
-            # Contribution streak (approximation via events)
             try:
                 events = list(user.get_events())[:100]
                 push_dates = sorted(
@@ -113,9 +112,8 @@ class GitHubTool(BaseTool):
                 streak = 0
 
             complexity_score = min(10, len(key_projects) * 1.5 + len(language_percentages) * 0.5)
-
-            log.info("github_analysis_complete", username=username, repos_analyzed=len(repos))
-            return {
+            
+            result = {
                 "languages": language_percentages,
                 "frameworks": sorted(frameworks)[:20],
                 "contribution_streak_days": streak,
@@ -128,10 +126,10 @@ class GitHubTool(BaseTool):
                 },
                 "raw_url": github_url,
             }
+            if hasattr(self, "_cache"):
+                self._cache[cache_key] = result
+            return result
 
-        except ImportError:
-            log.error("PyGithub not installed")
-            return {"error": "PyGithub not available", "languages": {}, "frameworks": []}
         except Exception as exc:
             log.error("github_tool_error", error=str(exc), url=github_url)
             return {"error": str(exc), "languages": {}, "frameworks": []}

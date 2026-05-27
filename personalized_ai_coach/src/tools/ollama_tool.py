@@ -26,9 +26,18 @@ class OllamaTool(BaseTool):
     args_schema: type[BaseModel] = OllamaToolInput
 
     def _run(self, action: str, model_name: str = "", user_notes: list[str] = None) -> dict[str, Any]:
-        return asyncio.get_event_loop().run_until_complete(
-            self._async_run(action, model_name, user_notes or [])
-        )
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        if loop.is_running():
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor() as executor:
+                return executor.submit(lambda: asyncio.run(self._async_run(action, model_name, user_notes or []))).result()
+        else:
+            return loop.run_until_complete(self._async_run(action, model_name, user_notes or []))
 
     async def _async_run(self, action: str, model_name: str, user_notes: list[str]) -> dict[str, Any]:
         base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")

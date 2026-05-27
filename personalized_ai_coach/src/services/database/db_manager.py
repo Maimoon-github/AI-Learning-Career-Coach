@@ -25,7 +25,7 @@ class Checkpoint(Base):
     parent_checkpoint_id = Column(String(255), nullable=True)
     type = Column(String(50))
     checkpoint = Column(JSON, nullable=False)  # serialized AgentState
-    metadata = Column(JSON, nullable=True)
+    checkpoint_metadata = Column("metadata", JSON, nullable=True)
     created_at = Column(DateTime, server_default=text("NOW()"))
     __table_args__ = (Index("idx_thread", "thread_id"),)
 
