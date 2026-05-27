@@ -25,6 +25,11 @@ from src.langgraph_workflow.state import initial_state
 from src.utils.llm_client import OllamaClient
 from src.utils.error_handling import async_retry_with_backoff
 
+# At top, after imports
+from src.utils.structlog_config import configure_structlog, bind_context
+from src.services.metrics_exporter import start_metrics_server
+from langsmith import Client as LangSmithClient
+
 # Environment & logging
 load_dotenv()
 structlog.configure(
@@ -36,6 +41,23 @@ structlog.configure(
     logger_factory=structlog.PrintLoggerFactory(),
 )
 logger = structlog.get_logger()
+
+# After load_dotenv()
+configure_structlog()
+if os.getenv("LANGCHAIN_TRACING_V2") == "true":
+    # LangSmith automatically patches LangChain calls if env vars are set.
+    # We'll also set a callback handler for CrewAI.
+    from langsmith.wrappers import wrap_openai
+    # CrewAI uses LangChain LLMs; tracing will propagate.
+
+# Start Prometheus metrics server in a background thread
+start_metrics_server(port=int(os.getenv("PROMETHEUS_PORT", "9090")))
+
+# Inside lifespan, after creating graph_app, bind context for each session
+async def run_coaching_session_with_voice(user_id: str, target_role: str):
+    bind_context(user_id=user_id, session_id=state["session_id"])
+        # ... rest
+
 
 # Global references for lifespan
 graph_app = None

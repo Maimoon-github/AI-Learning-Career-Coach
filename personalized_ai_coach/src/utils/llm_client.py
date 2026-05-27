@@ -8,6 +8,18 @@ from langchain_core.language_models.llms import BaseLLM
 from cachetools import TTLCache
 import hashlib
 
+from src.services.metrics_exporter import llm_token_usage, llm_latency
+
+async def generate(self, prompt: str, task_type: str = "structured_extraction") -> str:
+    model = TASK_MODEL_MAP.get(task_type, "llama3.2:3b")
+    start = time.perf_counter()
+    response = await self._get_llm_for_task(task_type).ainvoke(prompt)
+    duration = time.perf_counter() - start
+    llm_latency.labels(model=model, task_type=task_type).observe(duration)
+    # token counting (approx)
+    llm_token_usage.labels(model=model, task_type=task_type).set(len(prompt.split()) + len(response.split()))
+    return response
+
 class OllamaClient:
     def __init__(self):
         # ... existing init ...
