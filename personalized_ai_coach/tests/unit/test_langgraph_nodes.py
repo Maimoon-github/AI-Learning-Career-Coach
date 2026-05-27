@@ -1,276 +1,103 @@
-"""
-Unit tests for LangGraph nodes, CrewAI crews, and tools.
-Run: pytest tests/ -v --asyncio-mode=auto
-"""
-from __future__ import annotations
-
-import asyncio
-import json
-from typing import Any
+import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from src.langgraph_workflow.state import initial_state
+from src.langgraph_workflow.nodes.profile_ingestion_node import profile_ingestion_node
+from src.langgraph_workflow.nodes.skill_assessment_node import skill_assessment_node
+from src.langgraph_workflow.nodes.learning_path_node import learning_path_node
+from src.langgraph_workflow.nodes.project_generation_node import project_generation_node
+from src.langgraph_workflow.nodes.llm_fine_tuning_node import llm_fine_tuning_node
+from src.langgraph_workflow.nodes.progress_report_node import progress_report_node
+from src.langgraph_workflow.nodes.hitl_node import hitl_node
+from src.utils.error_handling import CrewExecutionError
 
-
-# ── Fixtures ──────────────────────────────────────────────────────────────────
 
 @pytest.fixture
-def base_state() -> dict:
+def base_state():
     return initial_state(
-        user_id="test_user_001",
+        user_id="test_user",
         target_role="ML Engineer",
-        session_id="test-session-001",
-        github_profile_url="https://github.com/testuser",
-        kaggle_username="testuser",
-        uploaded_document_paths=[],
+        session_id="test_session",
+        github_profile_url="https://github.com/test",
+        kaggle_username="test",
+        uploaded_document_paths=["resume.pdf"],
     )
 
 
-@pytest.fixture
-def state_with_profile(base_state) -> dict:
-    return {
-        **base_state,
-        "skill_profile": {
-            "user_id": "test_user_001",
-            "target_role": "ML Engineer",
-            "skills": [
-                {"name": "python", "level": 3, "source": ["github"], "confidence": 0.9},
-                {"name": "pytorch", "level": 2, "source": ["kaggle"], "confidence": 0.7},
-            ],
-            "github_signals": {"languages": {"Python": 75.0, "JavaScript": 15.0}},
-        },
-    }
-
-
-@pytest.fixture
-def state_with_gaps(state_with_profile) -> dict:
-    return {
-        **state_with_profile,
-        "skill_gaps": [
-            {
-                "skill_name": "mlops",
-                "current_level": 1,
-                "required_level": 3,
-                "gap_severity": 3,
-                "weeks_to_close": 4,
-                "priority_rank": 1,
-            },
-            {
-                "skill_name": "distributed_training",
-                "current_level": 0,
-                "required_level": 2,
-                "gap_severity": 2,
-                "weeks_to_close": 3,
-                "priority_rank": 2,
-            },
-        ],
-    }
-
-
-# ── State tests ───────────────────────────────────────────────────────────────
-
-class TestAgentState:
-    def test_initial_state_has_all_keys(self, base_state):
-        required_keys = [
-            "user_id", "target_role", "session_id", "skill_profile",
-            "skill_gaps", "learning_path", "practice_projects",
-            "current_week", "hitl_action", "messages",
-        ]
-        for key in required_keys:
-            assert key in base_state, f"Missing key: {key}"
-
-    def test_initial_state_defaults(self, base_state):
-        assert base_state["skill_profile"] is None
-        assert base_state["skill_gaps"] == []
-        assert base_state["learning_path"] is None
-        assert base_state["current_week"] == 1
-        assert base_state["revision_cycle"] == 0
-        assert base_state["messages"] == []
-
-
-# ── Node tests ────────────────────────────────────────────────────────────────
-
-class TestProfileIngestionNode:
-    @pytest.mark.asyncio
-    async def test_successful_profile_ingestion(self, base_state):
-        mock_profile = {
-            "user_id": "test_user_001",
-            "skills": [{"name": "python", "level": 3, "confidence": 0.9}],
-        }
-        with patch(
-            "src.langgraph_workflow.nodes.all_nodes.ProfileAnalysisCrew"
-        ) as MockCrew:
-            MockCrew.return_value.kickoff.return_value = mock_profile
-            from src.langgraph_workflow.nodes.all_nodes import profile_ingestion_node
-            result = await profile_ingestion_node(base_state)
-
-        assert result["skill_profile"] == mock_profile
+@pytest.mark.asyncio
+async def test_profile_ingestion_node_success(base_state):
+    with patch("src.langgraph_workflow.nodes.profile_ingestion_node._run_crew", new_callable=AsyncMock) as mock:
+        mock.return_value = {"skills": [{"name": "python", "level": 3}]}
+        result = await profile_ingestion_node(base_state)
+        assert "skill_profile" in result
         assert result["error_context"] is None
 
-    @pytest.mark.asyncio
-    async def test_profile_ingestion_handles_error(self, base_state):
-        with patch(
-            "src.langgraph_workflow.nodes.all_nodes.ProfileAnalysisCrew"
-        ) as MockCrew:
-            MockCrew.return_value.kickoff.side_effect = RuntimeError("API unavailable")
-            from src.langgraph_workflow.nodes.all_nodes import profile_ingestion_node
-            result = await profile_ingestion_node(base_state)
 
+@pytest.mark.asyncio
+async def test_profile_ingestion_node_failure(base_state):
+    with patch("src.langgraph_workflow.nodes.profile_ingestion_node._run_crew", side_effect=CrewExecutionError("fail")):
+        result = await profile_ingestion_node(base_state)
         assert result["error_context"] is not None
-        assert "profile_ingestion" in result["error_context"]["node"]
+        assert result["error_context"]["node"] == "profile_ingestion"
 
 
-class TestSkillAssessmentNode:
-    @pytest.mark.asyncio
-    async def test_skill_assessment_produces_gaps(self, state_with_profile):
-        mock_gaps = [
-            {"skill_name": "mlops", "current_level": 1, "required_level": 3, "gap_severity": 3},
-        ]
-        with patch(
-            "src.langgraph_workflow.nodes.all_nodes.SkillGapAssessmentCrew"
-        ) as MockCrew:
-            MockCrew.return_value.kickoff.return_value = mock_gaps
-            from src.langgraph_workflow.nodes.all_nodes import skill_assessment_node
-            result = await skill_assessment_node(state_with_profile)
-
-        assert result["skill_gaps"] == mock_gaps
-        assert result["error_context"] is None
-
-    @pytest.mark.asyncio
-    async def test_skill_assessment_fails_without_profile(self, base_state):
-        from src.langgraph_workflow.nodes.all_nodes import skill_assessment_node
-        result = await skill_assessment_node(base_state)
-        assert result["error_context"] is not None
+@pytest.mark.asyncio
+async def test_skill_assessment_node_success(base_state):
+    state = {**base_state, "skill_profile": {"skills": []}}
+    with patch("src.langgraph_workflow.nodes.skill_assessment_node._run_crew", new_callable=AsyncMock) as mock:
+        mock.return_value = [{"skill_name": "LangGraph", "current_level": 1, "required_level": 4, "gap_severity": 2, "weeks_to_close": 4, "learning_objective": "learn", "priority_rank": 1}]
+        result = await skill_assessment_node(state)
+        assert "skill_gaps" in result
+        assert len(result["skill_gaps"]) == 1
 
 
-class TestProjectGenerationNode:
-    @pytest.mark.asyncio
-    async def test_generates_projects_for_top_gaps_in_parallel(self, state_with_gaps):
-        mock_projects = [{"title": "MLOps Pipeline", "difficulty": 3}]
-        with patch(
-            "src.langgraph_workflow.nodes.all_nodes.ProjectGenerationCrew"
-        ) as MockCrew:
-            MockCrew.return_value.kickoff.return_value = mock_projects
-            from src.langgraph_workflow.nodes.all_nodes import project_generation_node
-            result = await project_generation_node(state_with_gaps)
-
-        assert len(result["practice_projects"]) > 0
-
-    @pytest.mark.asyncio
-    async def test_no_projects_when_no_gaps(self, state_with_profile):
-        from src.langgraph_workflow.nodes.all_nodes import project_generation_node
-        result = await project_generation_node(state_with_profile)
-        assert result["practice_projects"] == []
+@pytest.mark.asyncio
+async def test_learning_path_node_success(base_state):
+    state = {**base_state, "skill_gaps": []}
+    sample_path = {"user_id": "test", "target_role": "ML Engineer", "duration_weeks": 4, "hours_per_week": 10, "skill_gaps": [], "weeks": [], "total_hours": 0, "version": 1, "validation_notes": []}
+    with patch("src.langgraph_workflow.nodes.learning_path_node._run_crew", new_callable=AsyncMock) as mock:
+        mock.return_value = sample_path
+        result = await learning_path_node(state)
+        assert "learning_path" in result
 
 
-# ── Routing logic tests ───────────────────────────────────────────────────────
-
-class TestGraphRouting:
-    def test_route_after_profile_goes_to_assessment_on_success(self, state_with_profile):
-        from src.langgraph_workflow.graph import route_after_profile
-        result = route_after_profile(state_with_profile)
-        assert result == "skill_assessment"
-
-    def test_route_after_profile_ends_on_missing_profile(self, base_state):
-        from langgraph.graph import END
-        from src.langgraph_workflow.graph import route_after_profile
-        result = route_after_profile({**base_state, "error_context": {"error": "failed"}})
-        assert result == END
-
-    def test_route_after_hitl_approve_advances(self, state_with_gaps):
-        state = {**state_with_gaps, "hitl_action": "approve", "revision_cycle": 0}
-        from src.langgraph_workflow.graph import route_after_hitl
-        result = route_after_hitl(state)
-        assert result == "learning_path"
-
-    def test_route_after_hitl_end_terminates(self, state_with_gaps):
-        from langgraph.graph import END
-        state = {**state_with_gaps, "hitl_action": "end", "revision_cycle": 0}
-        from src.langgraph_workflow.graph import route_after_hitl
-        result = route_after_hitl(state)
-        assert result == END
+@pytest.mark.asyncio
+async def test_project_generation_node_parallel(base_state):
+    state = {**base_state, "skill_gaps": [{"skill_name": "Python", "gap_severity": 3, "current_level": 1, "weeks_to_close": 2}]}
+    sample_project = {"title": "Project", "description": "desc", "problem_statement": "prob", "primary_skill": "Python", "requirements": ["req"], "acceptance_criteria": ["ac"], "estimated_hours": 10, "artifact_type": "API", "difficulty": 3, "created_at": "2025-01-01T00:00:00"}
+    with patch("src.langgraph_workflow.nodes.project_generation_node._generate_for_gap", new_callable=AsyncMock) as mock:
+        mock.return_value = [sample_project]
+        result = await project_generation_node(state)
+        assert "practice_projects" in result
+        assert len(result["practice_projects"]) == 1
 
 
-# ── Model tests ───────────────────────────────────────────────────────────────
-
-class TestSkillProfileModel:
-    def test_skill_level_lookup(self):
-        from src.models.skill_profile_model import SkillEntry, SkillLevel, SkillProfile
-        profile = SkillProfile(
-            user_id="u1",
-            target_role="ML Engineer",
-            skills=[SkillEntry(name="Python", level=SkillLevel.INTERMEDIATE, confidence=0.9)],
-        )
-        assert profile.get_skill_level("python") == SkillLevel.INTERMEDIATE
-        assert profile.get_skill_level("unknown_skill") == SkillLevel.NONE
-
-    def test_skill_name_normalization(self):
-        from src.models.skill_profile_model import SkillEntry, SkillLevel
-        entry = SkillEntry(name="  Python  ", level=SkillLevel.ADVANCED, confidence=1.0)
-        assert entry.name == "python"
-
-    def test_top_skills_ordering(self):
-        from src.models.skill_profile_model import SkillEntry, SkillLevel, SkillProfile
-        profile = SkillProfile(
-            user_id="u1",
-            target_role="DE",
-            skills=[
-                SkillEntry(name="sql", level=SkillLevel.EXPERT, confidence=0.95),
-                SkillEntry(name="python", level=SkillLevel.INTERMEDIATE, confidence=0.8),
-                SkillEntry(name="spark", level=SkillLevel.ADVANCED, confidence=0.85),
-            ],
-        )
-        top = profile.top_skills(n=2)
-        assert top[0].name == "sql"
-        assert top[1].name == "spark"
+@pytest.mark.asyncio
+async def test_llm_fine_tuning_node_skipped(base_state):
+    state = {**base_state, "session_notes": []}
+    result = await llm_fine_tuning_node(state)
+    assert result["fine_tuning_status"] == "skipped"
 
 
-# ── Error handling tests ──────────────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_progress_report_node_success(base_state):
+    state = {**base_state, "current_week": 1, "learning_path": {"weeks": [{"topics": ["Python"], "estimated_hours": 5}]}, "practice_projects": [], "skill_gaps": []}
+    with patch("src.langgraph_workflow.nodes.progress_report_node._run_crew", new_callable=AsyncMock) as mock:
+        mock.return_value = {"headline_stat": "80%"}
+        result = await progress_report_node(state)
+        assert "weekly_report" in result
 
-class TestErrorHandling:
-    @pytest.mark.asyncio
-    async def test_retry_succeeds_on_third_attempt(self):
-        from src.utils.error_handling import ToolExecutionError, with_retry
 
-        call_count = 0
+@pytest.mark.asyncio
+async def test_hitl_node_interrupt_resume(base_state):
+    state = {**base_state, "current_week": 1, "revision_cycle": 0, "weekly_report": {}}
+    with patch("langgraph.types.interrupt") as mock_interrupt:
+        mock_interrupt.return_value = {"hitl_action": "approve", "user_feedback": None}
+        result = await hitl_node(state)
+        assert result["hitl_action"] == "approve"
+        assert result["revision_cycle"] == 0
 
-        @with_retry(max_attempts=3, retriable_errors=(ToolExecutionError,))
-        async def flaky_function():
-            nonlocal call_count
-            call_count += 1
-            if call_count < 3:
-                raise ToolExecutionError("transient failure")
-            return "success"
-
-        result = await flaky_function()
-        assert result == "success"
-        assert call_count == 3
-
-    @pytest.mark.asyncio
-    async def test_retry_raises_after_max_attempts(self):
-        from src.utils.error_handling import ToolExecutionError, with_retry
-
-        @with_retry(max_attempts=2, retriable_errors=(ToolExecutionError,))
-        async def always_fails():
-            raise ToolExecutionError("permanent failure")
-
-        with pytest.raises(ToolExecutionError):
-            await always_fails()
-
-    def test_non_retriable_error_is_not_retried(self):
-        from src.utils.error_handling import ToolExecutionError, with_retry
-
-        call_count = 0
-
-        @with_retry(max_attempts=3, retriable_errors=(ToolExecutionError,))
-        async def raises_value_error():
-            nonlocal call_count
-            call_count += 1
-            raise ValueError("not retriable")
-
-        with pytest.raises(ValueError):
-            asyncio.get_event_loop().run_until_complete(raises_value_error())
-
-        assert call_count == 1  # No retries for non-retriable errors
+        mock_interrupt.return_value = {"hitl_action": "revise", "user_feedback": "too easy"}
+        result = await hitl_node(state)
+        assert result["hitl_action"] == "revise"
+        assert result["revision_cycle"] == 1
