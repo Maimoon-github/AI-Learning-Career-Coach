@@ -114,3 +114,31 @@ class AudioChunk:
         self.data = data
         self.sample_rate = sample_rate
         self.encoding = encoding
+
+# Add to AudioStreamHandler class
+async def prompt_hitl(self, presentation: dict):
+    """Present HITL options via voice and collect user response."""
+    # Synthesise the report summary
+    report = presentation.get("weekly_report", {})
+    summary = f"Week {presentation.get('current_week')} is complete. {report.get('headline_stat', '')}"
+    await self.tts.synthesize_and_play(summary)
+    # Ask for decision
+    await self.tts.synthesize_and_play("Do you approve, revise, or end this session?")
+    # Listen for response
+    response = await self._listen_for_hitl_response()
+    # Resume workflow with user's decision
+    if self.on_resume:
+        await self.on_resume(response)
+
+async def _listen_for_hitl_response(self) -> dict:
+    """Wait for STT to recognise approve/revise/end."""
+    # Simplified: would wait for a transcript from the STT stream
+    # For production, use a queue and a timeout
+    import asyncio
+    # In real implementation, this would listen to the STT stream.
+    # For demo, return a default.
+    await asyncio.sleep(0.5)
+    return {"hitl_action": "approve", "user_feedback": None}
+
+# Add callback for resuming graph
+self.on_resume: Optional[Callable[[dict], Awaitable[None]]] = None

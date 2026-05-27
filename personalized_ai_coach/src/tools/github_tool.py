@@ -8,6 +8,21 @@ from typing import Any
 import structlog
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
+from cachetools import TTLCache
+import hashlib
+
+class GitHubTool(BaseTool):
+    def __init__(self):
+        self._cache = TTLCache(maxsize=100, ttl=3600)
+
+    async def _async_run(self, github_url: str, max_repos: int = 30) -> dict:
+        cache_key = hashlib.md5(f"{github_url}:{max_repos}".encode()).hexdigest()
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+        # ... existing logic ...
+        result = {...}  # your existing return dict
+        self._cache[cache_key] = result
+        return result
 
 log = structlog.get_logger(__name__)
 

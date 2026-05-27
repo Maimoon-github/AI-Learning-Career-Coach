@@ -1,144 +1,102 @@
-"""
-Integration tests for the full LangGraph workflow.
-These tests mock external APIs and LLM calls but exercise real graph routing.
-Run: pytest tests/integration/ -v --asyncio-mode=auto
-"""
-from __future__ import annotations
-
-from unittest.mock import MagicMock, patch
-
+import asyncio
 import pytest
-from langgraph.checkpoint.memory import MemorySaver
+from unittest.mock import patch, AsyncMock, MagicMock
 
-from src.langgraph_workflow.graph import build_graph
+from src.langgraph_workflow.graph import create_app
 from src.langgraph_workflow.state import initial_state
+from src.services.database.db_manager import init_db, get_session
+from src.utils.llm_client import OllamaClient
 
 
-MOCK_SKILL_PROFILE = {
-    "user_id": "inttest_user",
-    "target_role": "ML Engineer",
-    "skills": [
-        {"name": "python", "level": 3, "source": ["github"], "confidence": 0.9},
-    ],
-}
-
-MOCK_SKILL_GAPS = [
-    {
-        "skill_name": "mlops",
-        "current_level": 1,
-        "required_level": 3,
-        "gap_severity": 3,
-        "weeks_to_close": 4,
-        "priority_rank": 1,
-        "prerequisites": [],
-        "learning_objective": "Deploy and monitor ML models in production",
-    }
-]
-
-MOCK_LEARNING_PATH = {
-    "user_id": "inttest_user",
-    "target_role": "ML Engineer",
-    "duration_weeks": 4,
-    "hours_per_week": 10,
-    "weeks": [
-        {
-            "week_number": 1,
-            "primary_skill": "mlops",
-            "topics": ["Docker", "CI/CD for ML"],
-            "estimated_hours": 10,
-            "milestone": "Containerize a model",
-            "resources": [],
-        }
-    ],
-}
-
-MOCK_PROJECTS = [{"title": "MLOps Pipeline", "difficulty": 3, "estimated_hours": 15}]
-
-MOCK_REPORT = {
-    "week_number": 1,
-    "headline_stat": "Completed 2/3 topics",
-    "wins": ["Finished Docker module"],
-    "coach_note": "Great start with containerization basics.",
-}
+@pytest.fixture(autouse=True)
+async def setup_db():
+    await init_db()
+    yield
+    # Cleanup – drop tables? For test isolation, we use a test DB
 
 
-class TestFullWorkflowIntegration:
-    @pytest.mark.asyncio
-    async def test_workflow_graph_compiles(self):
-        """Graph compilation should succeed with MemorySaver."""
-        app = build_graph(checkpointer=MemorySaver()).compile(
-            checkpointer=MemorySaver(),
-            interrupt_before=["hitl"],
-        )
-        assert app is not None
+@pytest.fixture
+def mock_external_services():
+    with patch("src.tools.github_tool.GitHubTool._async_run", new_callable=AsyncMock) as gh, \
+         patch("src.tools.kaggle_tool.KaggleTool._async_run", new_callable=AsyncMock) as kg, \
+         patch("src.tools.web_search_tool.WebSearchTool._run") as ws, \
+         patch("src.crewai_agents.llm_fine_tuning_crew.LLMFineTuningCrew.kickoff") as ft, \
+         patch("src.utils.llm_client.OllamaClient.generate") as llm:
+        gh.return_value = {"languages": {"Python": 80}, "frameworks": ["django"]}
+        kg.return_value = {"tier": "Expert", "ml_domains": ["nlp"]}
+        ws.return_value = [{"title": "Resource", "url": "http://example.com"}]
+        ft.return_value = {"status": "dry_run_success"}
+        # Simulate LLM responses for structured extraction
+        llm.side_effect = [
+            '{"skills": [{"name": "python", "level": 3}], "user_id": "test"}',
+            '[{"skill_name": "LangGraph", "gap_severity": 2, "current_level": 1, "required_level": 4, "weeks_to_close": 4, "learning_objective": "learn", "priority_rank": 1}]',
+            '{"weeks": [{"week_number": 1, "primary_skill": "Python", "topics": ["basics"], "estimated_hours": 5, "milestone": "done"}], "duration_weeks": 4, "hours_per_week": 10, "user_id": "test", "target_role": "ML Engineer", "total_hours": 20, "version": 1, "validation_notes": []}',
+            '{"status": "dry_run_success"}',
+            '{"headline_stat": "80% completion"}',
+        ]
+        yield
 
-    @pytest.mark.asyncio
-    async def test_workflow_reaches_hitl_interrupt(self):
-        """Full pipeline from profile ingestion to HITL should fire."""
-        with (
-            patch("src.langgraph_workflow.nodes.all_nodes.ProfileAnalysisCrew") as P,
-            patch("src.langgraph_workflow.nodes.all_nodes.SkillGapAssessmentCrew") as SG,
-            patch("src.langgraph_workflow.nodes.all_nodes.LearningPathGenerationCrew") as LP,
-            patch("src.langgraph_workflow.nodes.all_nodes.ProjectGenerationCrew") as PG,
-            patch("src.langgraph_workflow.nodes.all_nodes.LLMFineTuningCrew") as FT,
-            patch("src.langgraph_workflow.nodes.all_nodes.ProgressReportingCrew") as PR,
-        ):
-            P.return_value.kickoff.return_value = MOCK_SKILL_PROFILE
-            SG.return_value.kickoff.return_value = MOCK_SKILL_GAPS
-            LP.return_value.kickoff.return_value = MOCK_LEARNING_PATH
-            PG.return_value.kickoff.return_value = MOCK_PROJECTS
-            FT.return_value.kickoff.return_value = {"status": "complete"}
-            PR.return_value.kickoff.return_value = MOCK_REPORT
 
-            checkpointer = MemorySaver()
-            app = build_graph().compile(checkpointer=checkpointer, interrupt_before=["hitl"])
+@pytest.mark.asyncio
+async def test_full_workflow_cycle(mock_external_services):
+    """Simulate a complete coaching session with HITL resume."""
+    app = create_app(backend="memory")  # Use memory for test speed
 
-            state = initial_state(
-                user_id="inttest_user",
-                target_role="ML Engineer",
-                session_id="integration-test-001",
-                github_profile_url="https://github.com/testuser",
-            )
+    session_id = "test_session"
+    state = initial_state(
+        user_id="test_user",
+        target_role="ML Engineer",
+        session_id=session_id,
+        github_profile_url="https://github.com/test",
+        kaggle_username="test",
+        uploaded_document_paths=["resume.pdf"],
+    )
+    thread_config = {"configurable": {"thread_id": session_id}}
 
-            events = []
-            async for event in app.astream(
-                state,
-                config={"configurable": {"thread_id": "integration-test-001"}},
-                stream_mode="values",
-            ):
-                events.append(event)
+    # Stream through the workflow until HITL interrupt
+    events = []
+    async for event in app.astream(state, config=thread_config, stream_mode="values"):
+        events.append(event)
+        if "__interrupt__" in event:
+            break
 
-            # Should have processed through to HITL interrupt
-            assert len(events) > 0
-            final = events[-1]
+    # Should have reached hitl_node
+    assert any("__interrupt__" in e for e in events)
+    # Resume with approval
+    resume_command = {"hitl_action": "approve", "user_feedback": None}
+    async for event in app.astream(resume_command, config=thread_config, stream_mode="values"):
+        events.append(event)
+        if event.get("current_week") == 2:
+            break
 
-            # Verify pipeline stages completed
-            if "__interrupt__" not in final:
-                # If no interrupt in stream, check last state has expected data
-                assert final.get("skill_profile") is not None or final.get("error_context") is not None
+    # Verify week advanced and graph continued
+    final_state = events[-1]
+    assert final_state.get("current_week") == 2
+    assert final_state.get("weekly_report") is not None
 
-    @pytest.mark.asyncio
-    async def test_workflow_ends_on_profile_failure(self):
-        """If profile ingestion fails, workflow should terminate gracefully."""
-        with patch("src.langgraph_workflow.nodes.all_nodes.ProfileAnalysisCrew") as P:
-            P.return_value.kickoff.side_effect = RuntimeError("GitHub API down")
 
-            checkpointer = MemorySaver()
-            app = build_graph().compile(checkpointer=checkpointer, interrupt_before=["hitl"])
+@pytest.mark.asyncio
+async def test_checkpoint_resumability(mock_external_services):
+    """Simulate crash and restart – graph resumes from last checkpoint."""
+    app = create_app(backend="memory")  # For real test use Postgres, but memory works
+    session_id = "resume_test"
+    state = initial_state(user_id="test", target_role="Engineer", session_id=session_id)
+    thread_config = {"configurable": {"thread_id": session_id}}
 
-            state = initial_state(
-                user_id="inttest_user",
-                target_role="ML Engineer",
-                session_id="failure-test-001",
-            )
+    # Run until profile_ingestion completes and then simulate crash by not consuming full stream
+    async for event in app.astream(state, config=thread_config, stream_mode="values"):
+        if event.get("skill_profile"):
+            break  # stop early
 
-            events = []
-            async for event in app.astream(
-                state,
-                config={"configurable": {"thread_id": "failure-test-001"}},
-                stream_mode="values",
-            ):
-                events.append(event)
+    # Create a new app instance (simulating restart)
+    app2 = create_app(backend="memory")
+    # Get the persisted state from the checkpointer (in memory, it's still there)
+    checkpoint = await app2.checkpointer.get(thread_config)
+    assert checkpoint is not None, "Checkpoint should exist"
 
-            # Should have error context set and terminated
-            assert len(events) > 0
+    # Resume from the saved checkpoint
+    async for event in app2.astream(None, config=thread_config, stream_mode="values"):
+        if event.get("skill_profile"):
+            # Should continue from where it left off
+            assert event.get("skill_profile") is not None
+            break

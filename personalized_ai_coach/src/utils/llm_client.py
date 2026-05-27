@@ -4,6 +4,26 @@ from typing import Any, AsyncIterator
 import httpx
 from langchain_community.llms import Ollama
 from langchain_core.language_models.llms import BaseLLM
+# Add near the top
+from cachetools import TTLCache
+import hashlib
+
+class OllamaClient:
+    def __init__(self):
+        # ... existing init ...
+        self._response_cache = TTLCache(maxsize=1000, ttl=3600)  # 1 hour
+
+    async def generate(self, prompt: str, task_type: str = "structured_extraction") -> str:
+        llm = self.get_llm_for_task(task_type)
+        # Create cache key
+        model = TASK_MODEL_MAP.get(task_type, "llama3.2:3b")
+        temp = 0.7 if task_type == "motivational_framing" else 0.2
+        key = hashlib.md5(f"{model}:{temp}:{prompt}".encode()).hexdigest()
+        if key in self._response_cache:
+            return self._response_cache[key]
+        response = await llm.ainvoke(prompt)
+        self._response_cache[key] = response
+        return response
 
 # Task type to model routing (mirrors config/llm_config.yaml)
 TASK_MODEL_MAP = {

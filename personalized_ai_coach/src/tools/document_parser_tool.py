@@ -155,6 +155,15 @@ class DocumentParserTool(BaseTool):
         text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
         return {"text": text, "format": "docx"}
 
+    # ... existing methods ...
+
+    def parse_multiple(self, file_paths: list[str]) -> list[dict[str, str]]:
+        """Batch parse multiple documents."""
+        results = []
+        for path in file_paths:
+            results.append(self._run(path))
+        return results
+
 
 # ── Ollama Tool ───────────────────────────────────────────────────────────────
 

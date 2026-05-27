@@ -1,153 +1,149 @@
 #!/usr/bin/env python3
-"""Foundation & Infrastructure entry point.
-
-Loads environment, initialises LangGraph with Postgres/Redis checkpointing,
-bootstraps voice interface stub, and exposes /health endpoint.
-"""
+"""Integration entry point – wires all layers together."""
 
 import asyncio
 import os
+import sys
 from contextlib import asynccontextmanager
 
 import structlog
+import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI
-from langgraph.checkpoint.postgres import PostgresSaver
-from langgraph.checkpoint.redis import RedisSaver
-from langgraph.graph import StateGraph, END
-from typing import TypedDict, Optional
-import uvicorn
-# ... after loading services
+from langchain_core.messages import HumanMessage
+
+# Import all services
 from src.services.database.db_manager import init_db, health_check as db_health
 from src.services.storage.s3_manager import S3Manager
 from src.services.voice_interface.stt_service import STTService
 from src.services.voice_interface.tts_service import TTSService
 from src.services.voice_interface.audio_stream_handler import AudioStreamHandler
 
-# At startup (inside lifespan)
-await init_db()
-s3 = S3Manager()
-stt = STTService()
-tts = TTSService()
-audio_handler = AudioStreamHandler(stt, tts)
+# Import LangGraph workflow
+from src.langgraph_workflow.graph import create_app
+from src.langgraph_workflow.state import initial_state
+from src.utils.llm_client import OllamaClient
+from src.utils.error_handling import async_retry_with_backoff
 
-# Healthcheck endpoint already exists; extend it
-@fastapi_app.get("/health")
-async def healthcheck():
-    # ... existing DB/Redis checks ...
-    s3_ok = await s3.health_check()
-    stt_ok = stt.api_key is not None  # simple
-    tts_ok = tts.api_key is not None or hasattr(tts, "_coqui_model")
-    # ... aggregate status
-
-# Load environment from .env
+# Environment & logging
 load_dotenv()
-
-# Configure structured JSON logging
 structlog.configure(
     processors=[
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.add_log_level,
-        structlog.processors.JSONRenderer()
+        structlog.processors.JSONRenderer(),
     ],
     logger_factory=structlog.PrintLoggerFactory(),
 )
 logger = structlog.get_logger()
 
-# ---------- LangGraph state definition ----------
-class AgentState(TypedDict):
-    user_input: str
-    echo: Optional[str]
+# Global references for lifespan
+graph_app = None
+voice_handler = None
+current_thread_config = None
 
-# Simple echo node to demonstrate checkpointing
-async def echo_node(state: AgentState) -> AgentState:
-    state["echo"] = f"Echo: {state['user_input']}"
-    logger.info("echo_node_executed", input=state["user_input"])
-    return state
 
-async def build_graph(backend: str):
-    """Build and compile LangGraph with the specified checkpoint backend."""
-    if backend == "postgres":
-        conn_string = os.environ["DATABASE_URL"]
-        checkpointer = PostgresSaver.from_conn_string(conn_string)
-        # Setup schema (idempotent)
-        await checkpointer.setup()
-        logger.info("Postgres checkpointer initialised", url=conn_string)
-    elif backend == "redis":
-        redis_url = os.environ["REDIS_URL"]
-        checkpointer = RedisSaver.from_conn_string(redis_url)
-        await checkpointer.setup()
-        logger.info("Redis checkpointer initialised", url=redis_url)
-    else:
-        raise ValueError(f"Unknown checkpoint backend: {backend}")
-
-    workflow = StateGraph(AgentState)
-    workflow.add_node("echo", echo_node)
-    workflow.set_entry_point("echo")
-    workflow.add_edge("echo", END)
-
-    app = workflow.compile(checkpointer=checkpointer)
-    return app
-
-# ---------- Voice interface stub ----------
-async def voice_loop():
-    """Stub for full-duplex voice interface (STT/TTS)."""
-    logger.info("Voice loop started (stub mode)")
-    while True:
-        await asyncio.sleep(10)
-        logger.debug("Voice loop heartbeat – replace with real STT/TTS")
-
-# ---------- Healthcheck HTTP server ----------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    global graph_app, voice_task
+    global graph_app, voice_handler
+
+    # 1. Initialise database and services
+    await init_db()
+    s3 = S3Manager()
+    stt = STTService()
+    tts = TTSService()
+    voice_handler = AudioStreamHandler(stt, tts)
+    logger.info("Services initialised")
+
+    # 2. Compile LangGraph with production checkpointer
     backend = os.getenv("CHECKPOINT_BACKEND", "postgres")
-    graph_app = await build_graph(backend)
-    logger.info("LangGraph compiled and checkpointer ready")
+    graph_app = create_app(backend=backend)
+    logger.info("LangGraph compiled", backend=backend)
 
-    # Start voice loop in background
-    voice_task = asyncio.create_task(voice_loop())
+    # 3. Wire voice bridge callbacks
+    voice_handler.on_transcript = on_user_transcript
+    voice_handler.on_error = on_audio_error
+
     yield
-    # Shutdown
-    voice_task.cancel()
-    await voice_task
 
+    # 4. Graceful shutdown
+    await voice_handler.close()
+    logger.info("Shutdown complete")
+
+
+async def on_user_transcript(transcript: str):
+    """Bridge from STT to LangGraph: inject user message."""
+    global graph_app, current_thread_config
+    if not graph_app or not current_thread_config:
+        logger.warning("Graph not ready, dropping transcript")
+        return
+
+    logger.info("Voice transcript received", text=transcript)
+    # Update state with user message
+    await graph_app.ainvoke(
+        {"messages": [HumanMessage(content=transcript)]},
+        config=current_thread_config,
+    )
+
+
+async def on_audio_error(error: Exception):
+    logger.error("Audio handler error", error=str(error))
+
+
+async def run_coaching_session_with_voice(user_id: str, target_role: str):
+    """Start a coaching session and connect voice interface."""
+    global current_thread_config
+
+    # Initialise state
+    state = initial_state(
+        user_id=user_id,
+        target_role=target_role,
+        session_id=os.urandom(8).hex(),
+    )
+    thread_config = {"configurable": {"thread_id": state["session_id"]}}
+    current_thread_config = thread_config
+
+    # Stream the workflow – when hitl_node interrupts, voice handler will present options
+    async for event in graph_app.astream(state, config=thread_config, stream_mode="values"):
+        logger.debug("Workflow event", event_type=type(event))
+        if "__interrupt__" in event:
+            # HITL interrupt – use voice to ask for approve/revise/end
+            await voice_handler.prompt_hitl(event["__interrupt__"][0].value)
+
+
+# FastAPI app with lifespan
 fastapi_app = FastAPI(lifespan=lifespan)
+
 
 @fastapi_app.get("/health")
 async def healthcheck():
-    """Verify connectivity to Postgres and Redis."""
-    status = {"status": "healthy", "postgres": False, "redis": False}
-    # Check Postgres
-    try:
-        import asyncpg
-        conn = await asyncpg.connect(os.environ["DATABASE_URL"])
-        await conn.execute("SELECT 1")
-        await conn.close()
-        status["postgres"] = True
-    except Exception as e:
-        logger.error("Postgres health check failed", error=str(e))
-    # Check Redis
-    try:
-        import redis.asyncio as redis
-        r = redis.from_url(os.environ["REDIS_URL"])
-        await r.ping()
-        await r.close()
-        status["redis"] = True
-    except Exception as e:
-        logger.error("Redis health check failed", error=str(e))
+    """Aggregate health status for all services."""
+    status = {"status": "healthy", "services": {}}
+    # Database
+    status["services"]["database"] = await db_health()
+    # S3 (if configured)
+    s3 = S3Manager()
+    status["services"]["s3"] = await s3.health_check()
+    # Ollama
+    llm = OllamaClient()
+    status["services"]["ollama"] = llm.health_check()
+    # STT/TTS stubs (just check env presence)
+    status["services"]["stt"] = bool(os.getenv("OPENAI_API_KEY") or os.getenv("WHISPER_MODEL"))
+    status["services"]["tts"] = bool(os.getenv("ELEVENLABS_API_KEY"))
 
-    if not (status["postgres"] and status["redis"]):
+    if all(status["services"].values()):
+        status["status"] = "healthy"
+    else:
         status["status"] = "degraded"
-    logger.info("Healthcheck requested", status=status["status"])
     return status
 
+
 async def main():
-    """Run the FastAPI server (healthcheck) and voice loop concurrently."""
+    """Run FastAPI server (healthcheck) and optionally a demo session."""
     config = uvicorn.Config(fastapi_app, host="0.0.0.0", port=8000, log_level="info")
     server = uvicorn.Server(config)
     await server.serve()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
