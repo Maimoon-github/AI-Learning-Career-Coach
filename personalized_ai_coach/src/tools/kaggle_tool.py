@@ -36,11 +36,15 @@ class KaggleTool(BaseTool):
 
     async def _async_run(self, username: str) -> dict[str, Any]:
         try:
-            from kaggle.api.kaggle_api_extended import KaggleApiExtended
-
-            # Authenticate (requires kaggle.json in ~/.kaggle/)
-            api = KaggleApiExtended()
-            api.authenticate()
+            # Support both old (KaggleApiExtended) and new (ApiClient) kaggle SDK versions
+            try:
+                from kaggle.api.kaggle_api_extended import KaggleApiExtended
+                api = KaggleApiExtended()
+                api.authenticate()
+            except ImportError:
+                import kaggle
+                api = kaggle.api
+                api.authenticate()
 
             # Search competitions (Kaggle API doesn't directly filter by user; use search)
             competitions = api.competitions_list(search=username)

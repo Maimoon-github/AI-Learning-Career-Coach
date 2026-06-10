@@ -125,7 +125,7 @@ class ProfileAnalysisCrew:
             tasks=tasks,
             process=Process.sequential,
             verbose=False,
-            memory=True,
+            memory=False,  # Disabled: requires OpenAI embeddings by default
         )
         log.info("profile_crew_starting", user_id=self.user_id)
         try:
@@ -139,11 +139,20 @@ class ProfileAnalysisCrew:
         except json.JSONDecodeError:
             output = {"raw_output": raw}
 
-        # Validate against Pydantic model
+        # Unwrap nested schema formats like {"name": "...", "parameters": {...}}
+        if "parameters" in output and isinstance(output.get("parameters"), dict):
+            output = output["parameters"]
+
+        # Inject required fields that the LLM is not expected to generate
+        output.setdefault("user_id", self.user_id)
+        output.setdefault("target_role", "Unknown")  # Streamlit page doesn't pass this to the crew
+
+        # Validate against Pydantic model (warn, don't crash, to allow graceful display)
         try:
             SkillProfile.model_validate(output)
         except Exception as e:
-            raise ValidationError(f"Profile output does not match schema: {e}") from e
+            log.warning("profile_schema_mismatch", error=str(e))
+            # Return raw output anyway so Streamlit can display it
 
         log.info("profile_crew_complete", user_id=self.user_id)
         return output

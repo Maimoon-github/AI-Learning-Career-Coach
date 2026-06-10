@@ -102,10 +102,12 @@ class GitHubTool(BaseTool):
                 )
                 streak = 0
                 if push_dates:
-                    check_date = push_dates[0]
-                    for d in push_dates:
-                        if d >= check_date - timedelta(days=streak + 1):
+                    prev_date = push_dates[0]
+                    streak = 1
+                    for d in push_dates[1:]:
+                        if (prev_date - d).days <= 1:
                             streak += 1
+                            prev_date = d
                         else:
                             break
             except Exception:
