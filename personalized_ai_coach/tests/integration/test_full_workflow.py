@@ -10,8 +10,17 @@ from src.utils.llm_client import OllamaClient
 
 @pytest.fixture(autouse=True)
 async def setup_db():
-    await init_db()
-    yield
+    # Patch create_async_engine to avoid pool_size/max_overflow issues with sqlite
+    from sqlalchemy.ext.asyncio import create_async_engine as original_create
+    with patch("src.services.database.db_manager.create_async_engine") as mock_create:
+        def side_effect(url, **kwargs):
+            if "sqlite" in url:
+                kwargs.pop("pool_size", None)
+                kwargs.pop("max_overflow", None)
+            return original_create(url, **kwargs)
+        mock_create.side_effect = side_effect
+        await init_db()
+        yield
     # Cleanup – drop tables? For test isolation, we use a test DB
 
 
