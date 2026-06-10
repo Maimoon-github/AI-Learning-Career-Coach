@@ -73,8 +73,10 @@ class OllamaClient:
         
         log.debug("llm_generated", model=model, duration=duration)
         
-        self._response_cache[key] = response
-        return response
+        # Ensure we return a string, not a BaseMessage
+        content = getattr(response, "content", response)
+        self._response_cache[key] = content
+        return content
 
     async def stream(self, prompt: str, task_type: str = "structured_extraction") -> AsyncIterator[str]:
         llm = self.get_llm_for_task(task_type)

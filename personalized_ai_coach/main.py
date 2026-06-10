@@ -54,9 +54,7 @@ if os.getenv("LANGCHAIN_TRACING_V2") == "true":
 start_metrics_server(port=int(os.getenv("PROMETHEUS_PORT", "9090")))
 
 # Inside lifespan, after creating graph_app, bind context for each session
-async def run_coaching_session_with_voice(user_id: str, target_role: str):
-    bind_context(user_id=user_id, session_id=state["session_id"])
-        # ... rest
+# (Stub removed, full implementation is at line 115)
 
 
 # Global references for lifespan
