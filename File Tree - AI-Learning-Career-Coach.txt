@@ -3,109 +3,108 @@ Root path: /home/maimoon-nixos/Antigravity code/AI-Learning-Career-Coach
 
 ────────────────────────────────────────────────────────────────────────────────
 
-├── 📁 personalized_ai_coach/
-│   ├── 📁 .pytest_cache/
-│   │   ├── 📁 v/
-│   │   ├── ⚙️ .gitignore
-│   │   ├── 📄 CACHEDIR.TAG
-│   │   └── 📝 README.md
-│   ├── 📁 config/
+├── 📁 .pytest_cache/
+│   ├── 📁 v/
+│   ├── ⚙️ .gitignore
+│   ├── 📄 CACHEDIR.TAG
+│   └── 📝 README.md
+├── 📁 config/
+│   ├── 🐍 __init__.py
+│   ├── ⚙️ agents.yaml
+│   ├── ⚙️ llm_config.yaml
+│   ├── ⚙️ system_settings.yaml
+│   └── ⚙️ tasks.yaml
+├── 📁 docs/
+│   ├── 📁 Prompt/
+│   │   └── 📝 0_1 coding prompt.md
+│   ├── 📝 File System Documentation_ Personalized AI Learning & Career Coach.md
+│   ├── 📄 Gantt Chart
+│   ├── 📝 Personalized AI Learning & Career Coach_ Agentic Workflow Architecture.md
+│   ├── 📝 Project File and Folder Hierarchy_ Personalized AI Learning & Career Coach.md
+│   └── 📝 architecture_document.md
+├── 📁 notebooks/
+│   ├── 🐍 __init__.py
+│   └── 📄 ollama_fine_tuning_experiment.ipynb
+├── 📁 scripts/
+│   ├── 🐍 __init__.py
+│   ├── 📄 deploy.sh
+│   ├── ⚙️ docker-compose.yml
+│   ├── 🐳 dockerfile
+│   └── 📄 setup_ollama.sh
+├── 📁 src/
+│   ├── 📁 crewai_agents/
 │   │   ├── 🐍 __init__.py
-│   │   ├── ⚙️ agents.yaml
-│   │   ├── ⚙️ llm_config.yaml
-│   │   ├── ⚙️ system_settings.yaml
-│   │   └── ⚙️ tasks.yaml
-│   ├── 📁 docs/
-│   │   ├── 📁 Prompt/
-│   │   │   └── 📝 0_1 coding prompt.md
-│   │   ├── 📝 File System Documentation_ Personalized AI Learning & Career Coach.md
-│   │   ├── 📄 Gantt Chart
-│   │   ├── 📝 Personalized AI Learning & Career Coach_ Agentic Workflow Architecture.md
-│   │   ├── 📝 Project File and Folder Hierarchy_ Personalized AI Learning & Career Coach.md
-│   │   └── 📝 architecture_document.md
-│   ├── 📁 notebooks/
+│   │   ├── 🐍 learning_path_generation_crew.py
+│   │   ├── 🐍 llm_fine_tuning_crew.py
+│   │   ├── 🐍 profile_analysis_crew.py
+│   │   ├── 🐍 progress_reporting_crew.py
+│   │   ├── 🐍 project_generation_crew.py
+│   │   └── 🐍 skill_gap_assessment_crew.py
+│   ├── 📁 langgraph_workflow/
+│   │   ├── 📁 nodes/
+│   │   │   ├── 🐍 __init__.py
+│   │   │   ├── 🐍 base.py
+│   │   │   ├── 🐍 hitl_node.py
+│   │   │   ├── 🐍 learning_path_node.py
+│   │   │   ├── 🐍 llm_fine_tuning_node.py
+│   │   │   ├── 🐍 profile_ingestion_node.py
+│   │   │   ├── 🐍 progress_report_node.py
+│   │   │   ├── 🐍 project_generation_node.py
+│   │   │   └── 🐍 skill_assessment_node.py
 │   │   ├── 🐍 __init__.py
-│   │   └── 📄 ollama_fine_tuning_experiment.ipynb
-│   ├── 📁 scripts/
+│   │   ├── 🐍 graph.py
+│   │   └── 🐍 state.py
+│   ├── 📁 models/
 │   │   ├── 🐍 __init__.py
-│   │   ├── 📄 deploy.sh
-│   │   ├── ⚙️ docker-compose.yml
-│   │   ├── 🐳 dockerfile
-│   │   └── 📄 setup_ollama.sh
-│   ├── 📁 src/
-│   │   ├── 📁 crewai_agents/
+│   │   ├── 🐍 learning_path_model.py
+│   │   ├── 🐍 project_model.py
+│   │   └── 🐍 skill_profile_model.py
+│   ├── 📁 services/
+│   │   ├── 📁 database/
 │   │   │   ├── 🐍 __init__.py
-│   │   │   ├── 🐍 learning_path_generation_crew.py
-│   │   │   ├── 🐍 llm_fine_tuning_crew.py
-│   │   │   ├── 🐍 profile_analysis_crew.py
-│   │   │   ├── 🐍 progress_reporting_crew.py
-│   │   │   ├── 🐍 project_generation_crew.py
-│   │   │   └── 🐍 skill_gap_assessment_crew.py
-│   │   ├── 📁 langgraph_workflow/
-│   │   │   ├── 📁 nodes/
-│   │   │   │   ├── 🐍 __init__.py
-│   │   │   │   ├── 🐍 base.py
-│   │   │   │   ├── 🐍 hitl_node.py
-│   │   │   │   ├── 🐍 learning_path_node.py
-│   │   │   │   ├── 🐍 llm_fine_tuning_node.py
-│   │   │   │   ├── 🐍 profile_ingestion_node.py
-│   │   │   │   ├── 🐍 progress_report_node.py
-│   │   │   │   ├── 🐍 project_generation_node.py
-│   │   │   │   └── 🐍 skill_assessment_node.py
+│   │   │   └── 🐍 db_manager.py
+│   │   ├── 📁 storage/
 │   │   │   ├── 🐍 __init__.py
-│   │   │   ├── 🐍 graph.py
-│   │   │   └── 🐍 state.py
-│   │   ├── 📁 models/
+│   │   │   └── 🐍 s3_manager.py
+│   │   ├── 📁 voice_interface/
 │   │   │   ├── 🐍 __init__.py
-│   │   │   ├── 🐍 learning_path_model.py
-│   │   │   ├── 🐍 project_model.py
-│   │   │   └── 🐍 skill_profile_model.py
-│   │   ├── 📁 services/
-│   │   │   ├── 📁 database/
-│   │   │   │   ├── 🐍 __init__.py
-│   │   │   │   └── 🐍 db_manager.py
-│   │   │   ├── 📁 storage/
-│   │   │   │   ├── 🐍 __init__.py
-│   │   │   │   └── 🐍 s3_manager.py
-│   │   │   ├── 📁 voice_interface/
-│   │   │   │   ├── 🐍 __init__.py
-│   │   │   │   ├── 🐍 audio_stream_handler.py
-│   │   │   │   ├── 🐍 audio_types.py
-│   │   │   │   ├── 🐍 stt_service.py
-│   │   │   │   └── 🐍 tts_service.py
-│   │   │   ├── 🐍 __init__.py
-│   │   │   └── 🐍 metrics_exporter.py
-│   │   ├── 📁 tools/
-│   │   │   ├── 🐍 __init__.py
-│   │   │   ├── 🐍 document_parser_tool.py
-│   │   │   ├── 🐍 github_tool.py
-│   │   │   ├── 🐍 kaggle_tool.py
-│   │   │   ├── 🐍 ollama_tool.py
-│   │   │   └── 🐍 web_search_tool.py
-│   │   ├── 📁 utils/
-│   │   │   ├── 🐍 __init__.py
-│   │   │   ├── 🐍 data_preprocessing.py
-│   │   │   ├── 🐍 error_handling.py
-│   │   │   ├── 🐍 llm_client.py
-│   │   │   └── 🐍 structlog_config.py
-│   │   └── 🐍 __init__.py
-│   ├── 📁 tests/
-│   │   ├── 📁 integration/
-│   │   │   ├── 🐍 __init__.py
-│   │   │   └── 🐍 test_full_workflow.py
-│   │   ├── 📁 unit/
-│   │   │   ├── 🐍 __init__.py
-│   │   │   ├── 🐍 test_crewai_agents.py
-│   │   │   ├── 🐍 test_langgraph_nodes.py
-│   │   │   └── 🐍 test_tools.py
-│   │   └── 🐍 __init__.py
-│   ├── 📝 README.md
-│   ├── 🐍 debug_agent.py
-│   ├── 🐍 main.py
-│   └── 📄 requirements.txt
-├── ⚙️ .gitignore
+│   │   │   ├── 🐍 audio_stream_handler.py
+│   │   │   ├── 🐍 audio_types.py
+│   │   │   ├── 🐍 stt_service.py
+│   │   │   └── 🐍 tts_service.py
+│   │   ├── 🐍 __init__.py
+│   │   └── 🐍 metrics_exporter.py
+│   ├── 📁 tools/
+│   │   ├── 🐍 __init__.py
+│   │   ├── 🐍 document_parser_tool.py
+│   │   ├── 🐍 github_tool.py
+│   │   ├── 🐍 kaggle_tool.py
+│   │   ├── 🐍 ollama_tool.py
+│   │   └── 🐍 web_search_tool.py
+│   ├── 📁 utils/
+│   │   ├── 🐍 __init__.py
+│   │   ├── 🐍 data_preprocessing.py
+│   │   ├── 🐍 error_handling.py
+│   │   ├── 🐍 llm_client.py
+│   │   └── 🐍 structlog_config.py
+│   └── 🐍 __init__.py
+├── 📁 tests/
+│   ├── 📁 integration/
+│   │   ├── 🐍 __init__.py
+│   │   └── 🐍 test_full_workflow.py
+│   ├── 📁 unit/
+│   │   ├── 🐍 __init__.py
+│   │   ├── 🐍 test_crewai_agents.py
+│   │   ├── 🐍 test_langgraph_nodes.py
+│   │   ├── 🐍 test_orchestration_issues.py
+│   │   └── 🐍 test_tools.py
+│   └── 🐍 __init__.py
 ├── 📝 README.md
-├── 📄 create_ai_coach_structure.sh
-└── 📄 scaffold.sh
+├── 📄 ai_coach.db
+├── 🐍 app.py
+├── 🐍 debug_agent.py
+├── 🐍 main.py
+├── ⚙️ pytest.ini
+└── 📄 requirements.txt
 
 ────────────────────────────────────────────────────────────────────────────────
