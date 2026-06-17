@@ -45,8 +45,8 @@ def route_after_hitl(state: AgentState) -> Literal["learning_path", END]:
         log.info("routing.hitl.revise", cycle=revision_cycle)
         return "learning_path"
     if action == "revise" and revision_cycle > max_revisions:
-        log.warning("routing.hitl.max_revisions_exceeded", forcing_approve=True)
-        return "learning_path"
+        log.warning("routing.hitl.max_revisions_exceeded", forcing_end=True)
+        return END
     # approve → advance week
     log.info("routing.hitl.approved", week=state.get("current_week"))
     return "learning_path"
