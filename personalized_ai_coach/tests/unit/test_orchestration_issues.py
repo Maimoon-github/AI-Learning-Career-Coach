@@ -214,7 +214,12 @@ class TestHITLTimeoutError:
 
         state = _make_state(revision_cycle=0, weekly_report={})
 
-        with patch("langgraph.types.interrupt", return_value={"hitl_action": "approve", "user_feedback": None}):
+        # LangGraph's interrupt() calls get_config() internally — patch at the
+        # source it actually imports from so it works outside a runnable context.
+        with patch(
+            "src.langgraph_workflow.nodes.hitl_node.interrupt",
+            return_value={"hitl_action": "approve", "user_feedback": None},
+        ):
             result = await hitl_node(state)
         assert result["hitl_action"] == "approve"
 
@@ -226,7 +231,10 @@ class TestHITLTimeoutError:
         future_deadline = time.time() + 3600
         state = _make_state(hitl_deadline_ts=future_deadline, revision_cycle=0, weekly_report={})
 
-        with patch("langgraph.types.interrupt", return_value={"hitl_action": "approve", "user_feedback": None}):
+        with patch(
+            "src.langgraph_workflow.nodes.hitl_node.interrupt",
+            return_value={"hitl_action": "approve", "user_feedback": None},
+        ):
             result = await hitl_node(state)
         assert result["hitl_action"] == "approve"
 
@@ -403,31 +411,44 @@ class TestValidationErrorImport:
 # ===========================================================================
 
 class TestHITLNodeRevisionCycle:
-    """Validates hitl_node correctly increments revision_cycle on revise, not on approve."""
+    """Validates hitl_node correctly increments revision_cycle on revise, not on approve.
+
+    LangGraph's interrupt() internally calls get_config() which requires a
+    LangGraph runnable context that doesn't exist in unit tests.  We patch
+    interrupt at the module level where hitl_node imported it so the call
+    short-circuits before touching any context machinery.
+    """
+
+    @pytest.fixture(autouse=True)
+    def patch_interrupt(self):
+        """Patch interrupt at the module where hitl_node imported it."""
+        with patch("src.langgraph_workflow.nodes.hitl_node.interrupt") as mock_intr:
+            self._interrupt_mock = mock_intr
+            yield mock_intr
 
     @pytest.mark.asyncio
-    async def test_hitl_increment_on_revise(self):
+    async def test_hitl_increment_on_revise(self, patch_interrupt):
         from src.langgraph_workflow.nodes.hitl_node import hitl_node
+        patch_interrupt.return_value = {"hitl_action": "revise", "user_feedback": "too hard"}
         state = _make_state(revision_cycle=2, weekly_report={})
-        with patch("langgraph.types.interrupt", return_value={"hitl_action": "revise", "user_feedback": "too hard"}):
-            result = await hitl_node(state)
+        result = await hitl_node(state)
         assert result["revision_cycle"] == 3
         assert result["hitl_action"] == "revise"
 
     @pytest.mark.asyncio
-    async def test_hitl_no_increment_on_approve(self):
+    async def test_hitl_no_increment_on_approve(self, patch_interrupt):
         from src.langgraph_workflow.nodes.hitl_node import hitl_node
+        patch_interrupt.return_value = {"hitl_action": "approve", "user_feedback": None}
         state = _make_state(revision_cycle=1, weekly_report={})
-        with patch("langgraph.types.interrupt", return_value={"hitl_action": "approve", "user_feedback": None}):
-            result = await hitl_node(state)
+        result = await hitl_node(state)
         assert result["revision_cycle"] == 1
         assert result["hitl_action"] == "approve"
 
     @pytest.mark.asyncio
-    async def test_hitl_no_increment_on_end(self):
+    async def test_hitl_no_increment_on_end(self, patch_interrupt):
         from src.langgraph_workflow.nodes.hitl_node import hitl_node
+        patch_interrupt.return_value = {"hitl_action": "end", "user_feedback": None}
         state = _make_state(revision_cycle=0, weekly_report={})
-        with patch("langgraph.types.interrupt", return_value={"hitl_action": "end", "user_feedback": None}):
-            result = await hitl_node(state)
+        result = await hitl_node(state)
         assert result["revision_cycle"] == 0
         assert result["hitl_action"] == "end"
