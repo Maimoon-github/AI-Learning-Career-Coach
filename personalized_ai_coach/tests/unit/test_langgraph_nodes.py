@@ -91,7 +91,7 @@ async def test_progress_report_node_success(base_state):
 @pytest.mark.asyncio
 async def test_hitl_node_interrupt_resume(base_state):
     state = {**base_state, "current_week": 1, "revision_cycle": 0, "weekly_report": {}}
-    with patch("langgraph.types.interrupt") as mock_interrupt:
+    with patch("src.langgraph_workflow.nodes.hitl_node.interrupt") as mock_interrupt:
         mock_interrupt.return_value = {"hitl_action": "approve", "user_feedback": None}
         result = await hitl_node(state)
         assert result["hitl_action"] == "approve"

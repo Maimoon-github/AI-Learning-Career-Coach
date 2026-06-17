@@ -1,5 +1,6 @@
 import asyncio
 import pytest
+import pytest_asyncio
 from unittest.mock import patch, AsyncMock, MagicMock
 
 from src.langgraph_workflow.graph import create_app
@@ -8,7 +9,7 @@ from src.services.database.db_manager import init_db, get_session
 from src.utils.llm_client import OllamaClient
 
 
-@pytest.fixture(autouse=True)
+@pytest_asyncio.fixture(autouse=True)
 async def setup_db():
     # Patch create_async_engine to avoid pool_size/max_overflow issues with sqlite
     from sqlalchemy.ext.asyncio import create_async_engine as original_create
