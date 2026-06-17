@@ -8,7 +8,7 @@ from typing import Any, AsyncGenerator, Optional
 import structlog
 from sqlalchemy import text, Column, String, Integer, DateTime, JSON, Index
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 
 log = structlog.get_logger(__name__)
 
