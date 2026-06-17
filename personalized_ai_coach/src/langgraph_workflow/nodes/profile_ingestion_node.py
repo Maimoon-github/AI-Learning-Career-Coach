@@ -20,7 +20,7 @@ async def _run_crew(state: AgentState) -> dict:
         kaggle_username=state.get("kaggle_username"),
         document_paths=state.get("uploaded_document_paths", []),
     )
-    return await asyncio.get_event_loop().run_in_executor(None, crew.kickoff)
+    return await asyncio.get_running_loop().run_in_executor(None, crew.kickoff)
 
 
 async def profile_ingestion_node(state: AgentState) -> dict[str, Any]:
