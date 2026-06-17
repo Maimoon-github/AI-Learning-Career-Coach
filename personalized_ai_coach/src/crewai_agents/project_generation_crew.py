@@ -8,7 +8,7 @@ import yaml
 from crewai import Agent, Crew, Process, Task
 
 from src.models.project_model import ProjectSpec
-from src.utils.llm_client import get_llm
+from src.utils.llm_client import get_llm, get_embedder_config
 from src.utils.error_handling import CrewExecutionError, ValidationError
 
 log = structlog.get_logger(__name__)
@@ -93,6 +93,8 @@ class ProjectGenerationCrew:
             tasks=[ideation_task, spec_task, calibration_task],
             process=Process.sequential,
             verbose=False,
+            memory=True,
+            embedder=get_embedder_config(),
         )
         log.info("project_crew_starting", skill=self.skill_gap.get("skill_name", ""))
         try:

@@ -9,7 +9,7 @@ from crewai import Agent, Crew, Process, Task
 
 from src.models.learning_path_model import SkillGap
 from src.tools.web_search_tool import WebSearchTool
-from src.utils.llm_client import get_llm
+from src.utils.llm_client import get_llm, get_embedder_config
 from src.utils.error_handling import CrewExecutionError
 
 log = structlog.get_logger(__name__)
@@ -73,6 +73,8 @@ class SkillGapAssessmentCrew:
             tasks=[role_task, gap_task],
             process=Process.sequential,
             verbose=False,
+            memory=True,
+            embedder=get_embedder_config(),
         )
         log.info("skill_gap_crew_starting", target_role=self.target_role)
         try:

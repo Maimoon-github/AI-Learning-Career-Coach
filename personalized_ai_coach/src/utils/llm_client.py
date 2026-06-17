@@ -6,8 +6,9 @@ from typing import Any, AsyncIterator, Optional
 import httpx
 import structlog
 from cachetools import TTLCache
-from langchain_ollama import ChatOllama
+from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.embeddings import Embeddings
 
 log = structlog.get_logger(__name__)
 
@@ -21,6 +22,7 @@ TASK_MODEL_MAP = {
     "fine_tuning_eval": "llama3.2:3b",
     "report_generation": "llama3.2:3b",
     "motivational_framing": "llama3.2:3b",
+    "embeddings": "nomic-embed-text:latest",
 }
 
 class OllamaClient:
@@ -97,3 +99,20 @@ def get_llm(task_type: str = "structured_extraction") -> Any:
     model = TASK_MODEL_MAP.get(task_type, "llama3.2:3b")
     # Return string format for CrewAI compatibility to avoid type validation issues
     return f"ollama/{model}"
+
+def get_embeddings() -> Embeddings:
+    """Get LangChain-compatible Ollama embeddings."""
+    return OllamaEmbeddings(
+        base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+        model=TASK_MODEL_MAP.get("embeddings", "nomic-embed-text:latest"),
+    )
+
+def get_embedder_config() -> dict[str, Any]:
+    """Get CrewAI-compatible embedder configuration."""
+    return {
+        "provider": "ollama",
+        "config": {
+            "model": TASK_MODEL_MAP.get("embeddings", "nomic-embed-text:latest"),
+            "base_url": os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+        }
+    }

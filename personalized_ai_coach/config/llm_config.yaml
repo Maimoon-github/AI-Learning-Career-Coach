@@ -25,6 +25,11 @@ creative:
   num_ctx: 8192
   num_predict: 2048
 
+# Embedding model configuration
+embeddings:
+  model: nomic-embed-text:latest
+  base_url: "${OLLAMA_BASE_URL}"
+
 # Model routing by task type
 routing:
   structured_extraction: primary
@@ -35,3 +40,4 @@ routing:
   fine_tuning_eval: primary
   report_generation: primary
   motivational_framing: creative
+  embedding_task: embeddings

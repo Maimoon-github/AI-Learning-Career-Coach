@@ -9,7 +9,7 @@ from crewai import Agent, Crew, Process, Task
 
 from src.models.learning_path_model import LearningPath
 from src.tools.web_search_tool import WebSearchTool
-from src.utils.llm_client import get_llm
+from src.utils.llm_client import get_llm, get_embedder_config
 from src.utils.error_handling import CrewExecutionError, ValidationError
 
 log = structlog.get_logger(__name__)
@@ -102,7 +102,8 @@ class LearningPathGenerationCrew:
             tasks=[curriculum_task, resource_task, optimize_task],
             process=Process.sequential,
             verbose=False,
-            memory=False,  # memory=True requires OpenAI embeddings; incompatible with Ollama-only setup
+            memory=True,
+            embedder=get_embedder_config(),
         )
         log.info("learning_path_crew_starting", weeks=self.duration_weeks)
         try:

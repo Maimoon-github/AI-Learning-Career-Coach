@@ -11,7 +11,7 @@ from src.models.skill_profile_model import SkillProfile
 from src.tools.github_tool import GitHubTool
 from src.tools.kaggle_tool import KaggleTool
 from src.tools.document_parser_tool import DocumentParserTool
-from src.utils.llm_client import get_llm
+from src.utils.llm_client import get_llm, get_embedder_config
 from src.utils.error_handling import CrewExecutionError, ValidationError
 
 log = structlog.get_logger(__name__)
@@ -125,7 +125,8 @@ class ProfileAnalysisCrew:
             tasks=tasks,
             process=Process.sequential,
             verbose=False,
-            memory=False,  # Disabled: requires OpenAI embeddings by default
+            memory=True,  # Now enabled with local embeddings
+            embedder=get_embedder_config(),
         )
         log.info("profile_crew_starting", user_id=self.user_id)
         try:

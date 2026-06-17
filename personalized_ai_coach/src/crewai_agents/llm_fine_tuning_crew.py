@@ -9,7 +9,7 @@ import yaml
 from crewai import Agent, Crew, Process, Task
 
 from src.tools.ollama_tool import OllamaTool
-from src.utils.llm_client import get_llm
+from src.utils.llm_client import get_llm, get_embedder_config
 from src.utils.error_handling import CrewExecutionError
 
 log = structlog.get_logger(__name__)
@@ -114,6 +114,8 @@ class LLMFineTuningCrew:
             tasks=[data_task, ft_task, eval_task],
             process=Process.sequential,
             verbose=False,
+            memory=True,
+            embedder=get_embedder_config(),
         )
         log.info("fine_tuning_crew_starting", user_id=self.user_id, model=self.base_model)
         try:

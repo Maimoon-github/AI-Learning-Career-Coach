@@ -7,7 +7,7 @@ import structlog
 import yaml
 from crewai import Agent, Crew, Process, Task
 
-from src.utils.llm_client import get_llm
+from src.utils.llm_client import get_llm, get_embedder_config
 from src.utils.error_handling import CrewExecutionError
 
 log = structlog.get_logger(__name__)
@@ -96,6 +96,8 @@ class ProgressReportingCrew:
             tasks=[agg_task, report_task, motivation_task],
             process=Process.sequential,
             verbose=False,
+            memory=True,
+            embedder=get_embedder_config(),
         )
         log.info("progress_crew_starting", user_id=self.user_id, week=self.week_number)
         try:
