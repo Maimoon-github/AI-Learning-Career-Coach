@@ -27,7 +27,7 @@ async def _run_crew(state: AgentState) -> dict:
         duration_weeks=settings["learning"]["default_duration_weeks"],
         hours_per_week=settings["learning"]["default_hours_per_week"],
     )
-    path = await asyncio.get_event_loop().run_in_executor(
+    path = await asyncio.get_running_loop().run_in_executor(
         None, lambda: crew.kickoff(user_feedback=state.get("user_feedback"))
     )
     # Validate against Pydantic model
@@ -37,6 +37,9 @@ async def _run_crew(state: AgentState) -> dict:
 
 async def learning_path_node(state: AgentState) -> dict[str, Any]:
     log.info("node.learning_path.start", user_id=state["user_id"])
+    if state.get("error_context"):
+        log.warning("node.learning_path.skipped", reason="upstream_error", error=state["error_context"])
+        return {}
     try:
         path = await _run_crew(state)
         return {"learning_path": path, "user_feedback": None, "error_context": None}

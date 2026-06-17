@@ -19,7 +19,7 @@ async def _generate_for_gap(gap: dict) -> list[dict]:
         current_level=gap.get("current_level", 1),
         available_hours=gap.get("weeks_to_close", 2) * 10,
     )
-    projects = await asyncio.get_event_loop().run_in_executor(None, crew.kickoff)
+    projects = await asyncio.get_running_loop().run_in_executor(None, crew.kickoff)
     validated = []
     for p in projects:
         try:
@@ -31,6 +31,9 @@ async def _generate_for_gap(gap: dict) -> list[dict]:
 
 async def project_generation_node(state: AgentState) -> dict[str, Any]:
     log.info("node.project_generation.start", user_id=state["user_id"])
+    if state.get("error_context"):
+        log.warning("node.project_generation.skipped", reason="upstream_error", error=state["error_context"])
+        return {}
     gaps = state.get("skill_gaps", [])
     top_gaps = sorted(gaps, key=lambda g: g.get("gap_severity", 0), reverse=True)[:3]
 
