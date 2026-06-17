@@ -33,6 +33,9 @@ async def _run_crew(state: AgentState) -> dict:
 
 async def llm_fine_tuning_node(state: AgentState) -> dict[str, Any]:
     log.info("node.llm_fine_tuning.start", user_id=state["user_id"])
+    if state.get("error_context"):
+        log.warning("node.llm_fine_tuning.skipped", reason="upstream_error", error=state["error_context"])
+        return {}
     settings = _load_settings()
     notes = state.get("session_notes", [])
     min_required = settings["fine_tuning"]["min_examples_required"]
