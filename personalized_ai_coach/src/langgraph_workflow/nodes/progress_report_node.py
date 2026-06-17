@@ -36,7 +36,7 @@ async def _run_crew(state: AgentState, raw_metrics: dict) -> dict:
         week_number=state.get("current_week", 1),
         raw_metrics=raw_metrics,
     )
-    return await asyncio.get_event_loop().run_in_executor(None, crew.kickoff)
+    return await asyncio.get_running_loop().run_in_executor(None, crew.kickoff)
 
 
 async def progress_report_node(state: AgentState) -> dict[str, Any]:

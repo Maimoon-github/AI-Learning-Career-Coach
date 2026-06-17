@@ -19,7 +19,7 @@ async def _run_crew(state: AgentState) -> list[dict]:
         skill_profile=state["skill_profile"],
         target_role=state["target_role"],
     )
-    gaps = await asyncio.get_event_loop().run_in_executor(None, crew.kickoff)
+    gaps = await asyncio.get_running_loop().run_in_executor(None, crew.kickoff)
     # Validate each gap against Pydantic schema
     validated = []
     for g in gaps:

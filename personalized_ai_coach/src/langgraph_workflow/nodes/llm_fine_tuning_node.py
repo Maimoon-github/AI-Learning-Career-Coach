@@ -28,7 +28,7 @@ async def _run_crew(state: AgentState) -> dict:
         lora_rank=settings["fine_tuning"]["default_lora_rank"],
         learning_rate=settings["fine_tuning"]["default_learning_rate"],
     )
-    return await asyncio.get_event_loop().run_in_executor(None, crew.kickoff)
+    return await asyncio.get_running_loop().run_in_executor(None, crew.kickoff)
 
 
 async def llm_fine_tuning_node(state: AgentState) -> dict[str, Any]:
