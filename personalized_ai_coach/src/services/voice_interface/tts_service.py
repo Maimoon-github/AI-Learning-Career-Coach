@@ -86,9 +86,11 @@ class TTSService:
                 inputs = self.processor(text=clean_text, return_tensors="pt").to(self.device)
                 
                 # SpeechT5 has a maximum input length (600 tokens)
-                if inputs["input_ids"].shape[1] > 550:
-                    log.warn("tts_input_too_long", length=inputs["input_ids"].shape[1])
-                    return b""
+                input_ids = inputs.get("input_ids")
+                if input_ids is not None and hasattr(input_ids, "shape") and len(input_ids.shape) > 1:
+                    if input_ids.shape[1] > 550:
+                        log.warn("tts_input_too_long", length=input_ids.shape[1])
+                        return b""
 
                 with torch.no_grad():
                     speech = self.model.generate_speech(
