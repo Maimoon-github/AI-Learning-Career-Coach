@@ -64,17 +64,189 @@ def test_document_parser_tool(tmp_path):
     assert "text" in result
     assert "Sample content" in result["text"]
 
-def test_web_search_tool():
-    with patch("duckduckgo_search.DDGS") as MockDDGS:
-        mock_ddgs = MagicMock()
-        mock_ddgs.__enter__.return_value.text.return_value = [
-            {"title": "Result 1", "href": "http://example.com", "body": "Snippet"}
+# ---------------------------------------------------------------------------
+# WebSearchTool – comprehensive test suite
+# ---------------------------------------------------------------------------
+
+import src.tools.web_search_tool as _ws_module
+
+
+@pytest.fixture(autouse=True)
+def clear_search_cache():
+    """Wipe the module-level TTL cache before every test for isolation."""
+    _ws_module._CACHE.clear()
+    yield
+    _ws_module._CACHE.clear()
+
+
+_DDG_RAW = [
+    {"title": "Result 1", "href": "http://example.com/1", "body": "First snippet"},
+    {"title": "Result 2", "href": "http://example.com/2", "body": "Second snippet"},
+]
+
+
+def _make_ddgs_mock(raw=_DDG_RAW):
+    """Return a configured mock that mimics the DDGS context-manager API."""
+    mock_ddgs_instance = MagicMock()
+    mock_ddgs_instance.__enter__ = MagicMock(return_value=mock_ddgs_instance)
+    mock_ddgs_instance.__exit__ = MagicMock(return_value=False)
+    mock_ddgs_instance.text.return_value = raw
+    return mock_ddgs_instance
+
+
+# 1. DDG happy path —————————————————————————————————————————————————————————
+def test_web_search_ddg_happy_path():
+    tool = WebSearchTool()
+    with patch("src.tools.web_search_tool.os.getenv", return_value=""), \
+         patch("duckduckgo_search.DDGS", return_value=_make_ddgs_mock()):
+        result = tool._run("python tutorials", max_results=2)
+    assert isinstance(result, str)
+    assert "python tutorials" in result.lower()
+    assert "Result 1" in result
+    assert "http://example.com/1" in result
+
+
+# 2. SearXNG as fallback provider ———————————————————————————————————————
+def test_web_search_searxng_fallback():
+    """When DDG fails, SearXNG is called and its results are returned."""
+    tool = WebSearchTool()
+    ddgs_mock = _make_ddgs_mock()
+    ddgs_mock.text.side_effect = ConnectionError("DDG rate-limited")
+
+    searxng_payload = {
+        "results": [
+            {"title": "SearXNG Result", "url": "http://searxng.com/1", "content": "SearXNG snippet"},
         ]
-        MockDDGS.return_value = mock_ddgs
-        tool = WebSearchTool()
-        results = tool._run("test query", max_results=1)
-        assert len(results) >= 1
-        assert "title" in results[0]
+    }
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = searxng_payload
+    mock_resp.raise_for_status = MagicMock()
+
+    with patch("duckduckgo_search.DDGS", return_value=ddgs_mock), \
+         patch("src.tools.web_search_tool.httpx.get", return_value=mock_resp):
+        result = tool._run("machine learning jobs", max_results=1)
+
+    assert "SearXNG Result" in result
+    assert "http://searxng.com/1" in result
+
+
+# 3. SearXNG env-var override ————————————————————————————————————————————
+def test_web_search_searxng_instance_url_override():
+    """SEARXNG_INSTANCE_URL env var is forwarded to the HTTP call."""
+    tool = WebSearchTool()
+    ddgs_mock = _make_ddgs_mock()
+    ddgs_mock.text.side_effect = RuntimeError("DDG down")
+
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"results": [{"title": "Custom", "url": "http://my-searx.local/r", "content": "ok"}]}
+    mock_resp.raise_for_status = MagicMock()
+
+    with patch("duckduckgo_search.DDGS", return_value=ddgs_mock), \
+         patch("src.tools.web_search_tool.httpx.get", return_value=mock_resp) as mock_get, \
+         patch.dict("os.environ", {"SEARXNG_INSTANCE_URL": "http://my-searx.local"}):
+        tool._run("override test", max_results=1)
+
+    call_url = mock_get.call_args[0][0]
+    assert call_url.startswith("http://my-searx.local")
+
+
+# 4. Deduplication ————————————————————————————————————————————————————————
+def test_web_search_deduplication():
+    duplicate_raw = [
+        {"title": "Dup A", "href": "http://dup.com/page", "body": "First"},
+        {"title": "Dup B", "href": "http://dup.com/page", "body": "Second (same URL)"},
+        {"title": "Unique", "href": "http://unique.com/page", "body": "Unique result"},
+    ]
+    tool = WebSearchTool()
+    with patch("src.tools.web_search_tool.os.getenv", return_value=""), \
+         patch("duckduckgo_search.DDGS", return_value=_make_ddgs_mock(duplicate_raw)):
+        result = tool._run("dup query", max_results=5)
+
+    # "Dup B" / second occurrence of dup.com must be absent
+    assert result.count("http://dup.com/page") == 1
+    assert "Unique" in result
+
+
+# 5. Query sanitisation ———————————————————————————————————————————————————
+def test_web_search_query_sanitisation():
+    tool = WebSearchTool()
+    captured: list[str] = []
+
+    def fake_ddg_call(query, max_results):
+        captured.append(query)
+        return []
+
+    ddgs_mock = _make_ddgs_mock([])
+    ddgs_mock.text.side_effect = fake_ddg_call
+
+    with patch("src.tools.web_search_tool.os.getenv", return_value=""), \
+         patch("duckduckgo_search.DDGS", return_value=ddgs_mock):
+        tool._run("  python   jobs   ", max_results=3)
+
+    assert captured == ["python jobs"]
+
+
+# 6. max_results respected ————————————————————————————————————————————————
+def test_web_search_max_results_cap():
+    tool = WebSearchTool()
+    ddgs_mock = _make_ddgs_mock()
+
+    with patch("src.tools.web_search_tool.os.getenv", return_value=""), \
+         patch("duckduckgo_search.DDGS", return_value=ddgs_mock):
+        tool._run("ai news", max_results=1)
+
+    ddgs_mock.text.assert_called_once_with("ai news", max_results=1)
+
+
+# 7. All providers fail ———————————————————————————————————————————————————
+def test_web_search_all_providers_fail():
+    tool = WebSearchTool()
+    ddgs_mock = _make_ddgs_mock()
+    ddgs_mock.text.side_effect = ConnectionError("DDG offline")
+
+    with patch("src.tools.web_search_tool.os.getenv", return_value=""), \
+         patch("duckduckgo_search.DDGS", return_value=ddgs_mock):
+        result = tool._run("edge case", max_results=2)
+
+    assert isinstance(result, str)
+    assert "failed" in result.lower() or "unavailable" in result.lower()
+
+
+# 8. DDG partial / missing keys ——————————————————————————————————————————
+def test_web_search_ddg_missing_keys():
+    partial_raw = [
+        {},                                        # completely empty
+        {"href": "http://partial.com"},            # missing title & body
+        {"title": "Full", "href": "http://full.com", "body": "Full snippet"},
+    ]
+    tool = WebSearchTool()
+    with patch("src.tools.web_search_tool.os.getenv", return_value=""), \
+         patch("duckduckgo_search.DDGS", return_value=_make_ddgs_mock(partial_raw)):
+        result = tool._run("partial results", max_results=5)
+
+    # Must not raise; known good entry must appear
+    assert "Full" in result
+
+
+# 9. Caching —————————————————————————————————————————————————————————————
+def test_web_search_caching():
+    tool = WebSearchTool()
+    ddgs_mock = _make_ddgs_mock()
+
+    with patch("src.tools.web_search_tool.os.getenv", return_value=""), \
+         patch("duckduckgo_search.DDGS", return_value=ddgs_mock):
+        result_first = tool._run("cached query", max_results=2)
+        result_second = tool._run("cached query", max_results=2)
+
+    # Provider called only once despite two _run invocations
+    assert ddgs_mock.text.call_count == 1
+    assert result_first == result_second
+
+
+# 10. Format results – empty list ————————————————————————————————————————
+def test_format_results_empty():
+    output = WebSearchTool._format_results([], "empty query")
+    assert "No results found" in output
 
 def test_ollama_tool():
     with patch("httpx.AsyncClient") as MockClient:
