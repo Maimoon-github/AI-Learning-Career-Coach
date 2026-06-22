@@ -16,6 +16,13 @@ specified in the refactoring requirements:
   - All-providers-fail graceful degradation
   - Empty list formatting
   - SEARXNG_INSTANCE_URL env-var override
+
+  GitHubTool suite covers:
+  - Happy path with mocked httpx responses
+  - Cache hit/miss
+  - Invalid / unparseable username
+  - Network error graceful degradation
+  - Username parsing helper
 """
 
 import json
@@ -23,7 +30,8 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch, call
 from pathlib import Path
 
-from src.tools.github_tool import GitHubTool
+from src.tools.github_tool import GitHubTool, _parse_username, _CACHE
+import src.tools.github_tool as _gh_module
 from src.tools.kaggle_tool import KaggleTool
 from src.tools.document_parser_tool import DocumentParserTool
 from src.tools.ollama_tool import OllamaTool
@@ -41,20 +49,63 @@ from src.tools.web_search_tool import (
 
 
 # ===========================================================================
-# Non-web-search tool tests (unchanged)
+# Shared fixtures
 # ===========================================================================
 
-@pytest.fixture
-def mock_github_response():
-    return {
-        "languages": {"Python": 85.0, "JavaScript": 15.0},
-        "frameworks": ["django", "react"],
-        "contribution_streak_days": 7,
-        "project_complexity_score": 6.5,
-        "key_projects": [{"name": "test_repo", "description": "test", "tech_stack": [], "stars": 10, "size_kb": 500}],
-        "collaboration_signals": {"public_repos": 5, "followers": 10, "following": 2},
-        "raw_url": "https://github.com/testuser",
+@pytest.fixture(autouse=True)
+def clear_github_cache():
+    """Isolate every test: wipe the module-level GitHub TTL cache."""
+    _gh_module._CACHE.clear()
+    yield
+    _gh_module._CACHE.clear()
+
+
+_MOCK_USER = {
+    "login": "testuser",
+    "name": "Test User",
+    "bio": "A test user",
+    "public_repos": 5,
+    "public_gists": 2,
+    "followers": 10,
+    "following": 2,
+    "hireable": None,
+    "company": "",
+    "location": "Earth",
+    "blog": "",
+    "twitter_username": "",
+    "created_at": "2020-01-01T00:00:00Z",
+}
+
+_MOCK_REPOS = [
+    {
+        "name": "test_repo",
+        "fork": False,
+        "stargazers_count": 10,
+        "forks_count": 2,
+        "size": 500,
+        "language": "Python",
+        "description": "A test repository",
+        "topics": ["django", "react"],
+        "open_issues_count": 1,
+        "updated_at": "2024-01-01T00:00:00Z",
+        "html_url": "https://github.com/testuser/test_repo",
+        "default_branch": "main",
+        "languages_url": "https://api.github.com/repos/testuser/test_repo/languages",
     }
+]
+
+_MOCK_LANGS = {"Python": 85000, "JavaScript": 15000}
+
+
+def _make_mock_httpx_response(json_data, status_code=200):
+    """Build a MagicMock that looks like an httpx.Response."""
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.json.return_value = json_data
+    resp.raise_for_status = MagicMock()
+    resp.headers = {}
+    return resp
+
 
 @pytest.fixture
 def mock_kaggle_response():
@@ -68,19 +119,203 @@ def mock_kaggle_response():
     }
 
 
-def test_github_tool(mock_github_response):
-    with patch("github.Github") as MockGithub:
-        mock_user = MagicMock()
-        mock_user.public_repos = 5
-        mock_user.followers = 10
-        mock_user.following = 2
-        mock_user.get_repos.return_value = []
-        mock_user.get_events.return_value = []
-        MockGithub.return_value.get_user.return_value = mock_user
-        tool = GitHubTool()
+# ===========================================================================
+# GitHubTool — username parsing unit tests
+# ===========================================================================
+
+def test_parse_username_from_full_url():
+    assert _parse_username("https://github.com/testuser") == "testuser"
+
+def test_parse_username_from_url_with_trailing_slash():
+    assert _parse_username("https://github.com/testuser/") == "testuser"
+
+def test_parse_username_bare():
+    assert _parse_username("testuser") == "testuser"
+
+def test_parse_username_at_prefix():
+    assert _parse_username("@testuser") == "testuser"
+
+def test_parse_username_invalid_raises():
+    with pytest.raises(ValueError):
+        _parse_username("")
+
+def test_parse_username_invalid_chars_raises():
+    with pytest.raises(ValueError):
+        _parse_username("user name with spaces")
+
+
+# ===========================================================================
+# GitHubTool — happy path with httpx mock
+# ===========================================================================
+
+def test_github_tool_happy_path():
+    """
+    Mock the entire _async_run coroutine so we don't hit the network.
+    Verify the tool's _run bridges correctly and output schema is intact.
+    """
+    expected = {
+        "languages": {"Python": 85.0, "JavaScript": 15.0},
+        "frameworks": ["django", "react"],
+        "contribution_streak_days": 7,
+        "project_complexity_score": 6.5,
+        "key_projects": [{"name": "test_repo", "description": "A test repository",
+                          "tech_stack": ["django", "react"], "stars": 10, "size_kb": 500,
+                          "forks": 2, "language": "Python", "open_issues": 1,
+                          "last_updated": "2024-01-01T00:00:00Z",
+                          "url": "https://github.com/testuser/test_repo"}],
+        "collaboration_signals": {"public_repos": 5, "followers": 10, "following": 2,
+                                  "public_gists": 2, "total_stars_earned": 10,
+                                  "total_forks_earned": 2, "hireable": None, "company": "",
+                                  "location": "Earth", "blog": "", "twitter_username": ""},
+        "raw_url": "https://github.com/testuser",
+        "username": "testuser",
+        "name": "Test User",
+        "bio": "A test user",
+        "account_created": "2020-01-01T00:00:00Z",
+        "activity_days_last_year": 0,
+        "total_repos_analyzed": 1,
+        "top_language": "Python",
+    }
+
+    tool = GitHubTool()
+    with patch.object(tool, "_async_run", new=AsyncMock(return_value=expected)):
         result = tool._run("https://github.com/testuser")
-        assert "languages" in result
-        assert isinstance(result["languages"], dict)
+
+    assert "languages" in result
+    assert isinstance(result["languages"], dict)
+    assert "frameworks" in result
+    assert "key_projects" in result
+    assert "collaboration_signals" in result
+    assert result["username"] == "testuser"
+    assert result["top_language"] == "Python"
+
+
+# ===========================================================================
+# GitHubTool — _async_run with httpx mocked at the client level
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_github_tool_async_run_mocked():
+    """
+    Mock httpx.AsyncClient.get to return preset responses per URL pattern.
+    Validates that _analyze_profile assembles output correctly.
+    """
+    tool = GitHubTool()
+
+    async def fake_get(url, **kwargs):
+        if "/users/testuser" in url and "repos" not in url and "events" not in url:
+            return _make_mock_httpx_response(_MOCK_USER)
+        elif "/repos" in url and "/languages" not in url:
+            return _make_mock_httpx_response(_MOCK_REPOS)
+        elif "languages" in url:
+            return _make_mock_httpx_response(_MOCK_LANGS)
+        elif "events" in url:
+            return _make_mock_httpx_response([])
+        return _make_mock_httpx_response({})
+
+    mock_client = AsyncMock()
+    mock_client.get.side_effect = fake_get
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("src.tools.github_tool.httpx.AsyncClient", return_value=mock_client):
+        result = await tool._async_run("https://github.com/testuser", max_repos=5)
+
+    assert "languages" in result
+    assert isinstance(result.get("project_complexity_score"), float)
+    assert "collaboration_signals" in result
+
+
+# ===========================================================================
+# GitHubTool — error and edge-case tests
+# ===========================================================================
+
+def test_github_tool_invalid_username():
+    """Empty URL should return an error dict without raising."""
+    tool = GitHubTool()
+    result = tool._run("")
+    assert "error" in result
+    assert result["languages"] == {}
+
+
+def test_github_tool_network_error():
+    """Network failures must be caught and returned as error dict."""
+    tool = GitHubTool()
+    with patch.object(tool, "_async_run", new=AsyncMock(side_effect=Exception("network down"))):
+        # _run wraps _async_run; but since we patch _async_run directly,
+        # _run will propagate — so we test _async_run error path separately.
+        pass
+
+    # Test the actual error path inside _async_run
+    import asyncio
+    async def run():
+        with patch("src.tools.github_tool._analyze_profile", side_effect=Exception("boom")):
+            return await tool._async_run("https://github.com/testuser")
+
+    result = asyncio.run(run())
+    assert "error" in result
+    assert "languages" in result
+
+
+def test_github_tool_user_not_found():
+    """404 response for user endpoint returns error dict."""
+    tool = GitHubTool()
+
+    import asyncio
+
+    async def fake_get(url, **kwargs):
+        return _make_mock_httpx_response({}, status_code=404)
+
+    mock_client = AsyncMock()
+    mock_client.get.side_effect = fake_get
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    async def run():
+        with patch("src.tools.github_tool.httpx.AsyncClient", return_value=mock_client):
+            return await tool._async_run("https://github.com/nobody_exists_xyz")
+
+    result = asyncio.run(run())
+    assert "error" in result
+
+
+# ===========================================================================
+# GitHubTool — caching behaviour
+# ===========================================================================
+
+def test_github_tool_cache_hit_does_not_rerun():
+    """Second call with same args returns cached result without calling _analyze_profile."""
+    tool = GitHubTool()
+    first_result = {
+        "languages": {"Python": 100.0},
+        "frameworks": [],
+        "contribution_streak_days": 3,
+        "project_complexity_score": 2.0,
+        "key_projects": [],
+        "collaboration_signals": {},
+        "raw_url": "https://github.com/cacheduser",
+        "username": "cacheduser",
+        "name": "Cached User",
+        "bio": "",
+        "account_created": "",
+        "activity_days_last_year": 0,
+        "total_repos_analyzed": 0,
+        "top_language": "Python",
+    }
+    call_count = 0
+
+    async def fake_analyze(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return first_result
+
+    with patch("src.tools.github_tool._analyze_profile", side_effect=fake_analyze):
+        r1 = tool._run("https://github.com/cacheduser", max_repos=5)
+        r2 = tool._run("https://github.com/cacheduser", max_repos=5)
+
+    assert call_count == 1       # second call served from cache
+    assert r1 == r2
+    assert r1["top_language"] == "Python"
 
 
 def test_kaggle_tool(mock_kaggle_response):
@@ -116,15 +351,6 @@ def test_ollama_tool():
         assert result["sample_notes_used"] == 2
         result = tool._run("list_models")
         assert "models" in result
-
-
-@pytest.mark.asyncio
-async def test_github_tool_error():
-    with patch("github.Github") as MockGithub:
-        MockGithub.side_effect = Exception("API error")
-        tool = GitHubTool()
-        result = tool._run("https://github.com/invalid")
-        assert "error" in result
 
 
 # ===========================================================================
