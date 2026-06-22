@@ -1,42 +1,56 @@
 import asyncio
 import functools
-import logging
+import random
 import time
-from typing import Any, Callable, TypeVar, ParamSpec
+from typing import Any, Callable, ParamSpec, TypeVar
 
-logger = logging.getLogger(__name__)
+import structlog
 
-# Custom exceptions
-class ToolExecutionError(Exception):
-    """Raised when a tool (GitHub, Kaggle, web search) fails."""
-    pass
-
-class CrewExecutionError(Exception):
-    """Raised when a CrewAI crew fails after retries."""
-    pass
-
-class OllamaConnectionError(Exception):
-    """Raised when Ollama is unreachable or returns an error."""
-    pass
-
-class ValidationError(Exception):
-    """Raised when Pydantic validation fails on agent output."""
-    pass
-
-class HITLTimeoutError(Exception):
-    """Raised when a human-in-the-loop gate times out."""
-    pass
+log = structlog.get_logger(__name__)
 
 P = ParamSpec("P")
 T = TypeVar("T")
 
+# --- Domain-Specific Exceptions ---
+
+class CoachError(Exception):
+    """Base exception for all Coach utilities."""
+    def __init__(self, message: str, details: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.details = details or {}
+
+class ToolExecutionError(CoachError):
+    """Raised when an external tool (GitHub, Kaggle, Search) fails."""
+    pass
+
+class CrewExecutionError(CoachError):
+    """Raised when a multi-agent crew fails to complete a task."""
+    pass
+
+class LLMProviderError(CoachError):
+    """Raised when the LLM provider (Ollama) is unreachable or errors."""
+    pass
+
+class StructuredExtractionError(CoachError):
+    """Raised when structured output parsing fails."""
+    pass
+
+class ValidationError(CoachError):
+    """Raised when business logic or schema validation fails."""
+    pass
+
+# --- Retry Logic with Jitter ---
+
 def retry_with_backoff(
     max_attempts: int = 3,
-    initial_delay: float = 2.0,
-    backoff_multiplier: float = 2.0,
-    exceptions: tuple[type[Exception], ...] = (Exception,)
+    initial_delay: float = 1.0,
+    backoff_factor: float = 2.0,
+    jitter: bool = True,
+    exceptions: tuple[type[Exception], ...] = (Exception,),
 ) -> Callable[[Callable[P, T]], Callable[P, T]]:
-    """Decorator that retries a function with exponential backoff."""
+    """
+    Standard retry decorator with exponential backoff and optional jitter.
+    """
     def decorator(func: Callable[P, T]) -> Callable[P, T]:
         @functools.wraps(func)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
@@ -46,22 +60,36 @@ def retry_with_backoff(
                     return func(*args, **kwargs)
                 except exceptions as e:
                     if attempt == max_attempts:
-                        logger.error(f"Final attempt {attempt} failed: {e}")
+                        log.error("retry_final_failure", func=func.__name__, attempt=attempt, error=str(e))
                         raise
-                    logger.warning(f"Attempt {attempt} failed: {e}. Retrying in {delay}s")
-                    time.sleep(delay)
-                    delay *= backoff_multiplier
-            raise RuntimeError("Unreachable")  # pragma: no cover
+                    
+                    wait_time = delay
+                    if jitter:
+                        wait_time *= (0.5 + random.random())
+                    
+                    log.warning(
+                        "retry_attempt_failed",
+                        func=func.__name__,
+                        attempt=attempt,
+                        next_retry_in=f"{wait_time:.2f}s",
+                        error=str(e)
+                    )
+                    time.sleep(wait_time)
+                    delay *= backoff_factor
+            raise RuntimeError("Unreachable")
         return wrapper
     return decorator
 
-# Async version
 def async_retry_with_backoff(
     max_attempts: int = 3,
-    initial_delay: float = 2.0,
-    backoff_multiplier: float = 2.0,
-    exceptions: tuple[type[Exception], ...] = (Exception,)
+    initial_delay: float = 1.0,
+    backoff_factor: float = 2.0,
+    jitter: bool = True,
+    exceptions: tuple[type[Exception], ...] = (Exception,),
 ) -> Callable[[Callable[P, T]], Callable[P, T]]:
+    """
+    Async retry decorator with exponential backoff and optional jitter.
+    """
     def decorator(func: Callable[P, T]) -> Callable[P, T]:
         @functools.wraps(func)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
@@ -71,11 +99,22 @@ def async_retry_with_backoff(
                     return await func(*args, **kwargs)
                 except exceptions as e:
                     if attempt == max_attempts:
-                        logger.error(f"Final async attempt {attempt} failed: {e}")
+                        log.error("async_retry_final_failure", func=func.__name__, attempt=attempt, error=str(e))
                         raise
-                    logger.warning(f"Async attempt {attempt} failed: {e}. Retrying in {delay}s")
-                    await asyncio.sleep(delay)
-                    delay *= backoff_multiplier
+                    
+                    wait_time = delay
+                    if jitter:
+                        wait_time *= (0.5 + random.random())
+                    
+                    log.warning(
+                        "async_retry_attempt_failed",
+                        func=func.__name__,
+                        attempt=attempt,
+                        next_retry_in=f"{wait_time:.2f}s",
+                        error=str(e)
+                    )
+                    await asyncio.sleep(wait_time)
+                    delay *= backoff_factor
             raise RuntimeError("Unreachable")
         return wrapper
     return decorator
