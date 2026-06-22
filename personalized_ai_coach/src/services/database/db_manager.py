@@ -38,7 +38,7 @@ class Checkpoint(Base):
     parent_checkpoint_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     checkpoint: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    metadata: Mapped[Dict[str, Any]] = mapped_column("metadata", JSONB, nullable=True)
+    checkpoint_metadata: Mapped[Dict[str, Any]] = mapped_column("metadata", JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), 
         server_default=func.now(),
@@ -184,7 +184,7 @@ async def list_checkpoints(thread_id: str, limit: int = 10) -> List[Dict[str, An
     """List recent checkpoints for debugging and audit trails."""
     async with get_session() as session:
         stmt = (
-            select(Checkpoint.checkpoint_id, Checkpoint.created_at, Checkpoint.metadata)
+            select(Checkpoint.checkpoint_id, Checkpoint.created_at, Checkpoint.checkpoint_metadata)
             .where(Checkpoint.thread_id == thread_id)
             .order_by(Checkpoint.created_at.desc())
             .limit(limit)
@@ -194,7 +194,7 @@ async def list_checkpoints(thread_id: str, limit: int = 10) -> List[Dict[str, An
             {
                 "checkpoint_id": r.checkpoint_id,
                 "created_at": r.created_at.isoformat(),
-                "metadata": r.metadata or {}
+                "metadata": r.checkpoint_metadata or {}
             }
             for r in result.all()
         ]
