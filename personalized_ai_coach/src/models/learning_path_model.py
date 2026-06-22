@@ -1,72 +1,134 @@
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ResourceEntry(BaseModel):
-    title: str
-    url: str
-    resource_type: str  # video | article | course | book | docs
-    estimated_hours: float = Field(gt=0)
-    is_free: bool = True
-    quality_score: float = Field(ge=0, le=10)
-    provider: str = ""
+    """Represents a specific learning resource curated for a skill gap."""
+
+    title: str = Field(..., description="The title of the learning resource")
+    url: str = Field(..., description="The direct URL to the resource")
+    resource_type: Literal["video", "article", "course", "book", "docs"] = Field(
+        ..., description="The category of the resource for UI filtering and layout"
+    )
+    estimated_hours: float = Field(
+        gt=0, description="Estimated time in hours to complete or digest the resource"
+    )
+    is_free: bool = Field(True, description="Whether the resource is available for free")
+    quality_score: float = Field(
+        ge=0,
+        le=10,
+        description="Internal AI-generated quality score based on provider and content",
+    )
+    provider: str = Field("", description="The name of the platform or author (e.g., Coursera, Medium)")
 
 
 class WeekModule(BaseModel):
-    week_number: int = Field(ge=1)
-    primary_skill: str
-    topics: list[str] = Field(min_length=1)
-    estimated_hours: float = Field(gt=0)
-    milestone: str
-    review_topics: list[str] = Field(default_factory=list)
-    resources: list[ResourceEntry] = Field(default_factory=list)
-    is_review_week: bool = False
+    """A weekly curriculum unit in the generated learning path."""
+
+    week_number: int = Field(ge=1, description="The sequential week number in the path")
+    primary_skill: str = Field(..., description="The core skill being addressed this week")
+    topics: list[str] = Field(
+        min_length=1, description="Specific sub-topics or concepts to be covered"
+    )
+    estimated_hours: float = Field(
+        gt=0, description="Total estimated study time for this week's content"
+    )
+    milestone: str = Field(..., description="The goal or achievement for the end of the week")
+    review_topics: list[str] = Field(
+        default_factory=list, description="Topics from previous weeks to refresh"
+    )
+    resources: list[ResourceEntry] = Field(
+        default_factory=list, description="Curated list of learning materials"
+    )
+    is_review_week: bool = Field(
+        False, description="Flag indicating if this week is dedicated to consolidation"
+    )
 
     @field_validator("primary_skill", "milestone")
     @classmethod
     def not_empty(cls, v: str) -> str:
         if not v.strip():
-            raise ValueError("Field cannot be empty")
+            raise ValueError("Field cannot be empty or whitespace only")
         return v.strip()
 
 
 class SkillGap(BaseModel):
-    skill_name: str
-    current_level: int = Field(ge=0, le=5)
-    required_level: int = Field(ge=0, le=5)
-    gap_severity: int = Field(ge=1, le=3)
-    weeks_to_close: int = Field(ge=1)
-    prerequisites: list[str] = Field(default_factory=list)
-    learning_objective: str = ""
-    priority_rank: int = 1
+    """Detailed analysis of a specific skill deficiency compared to target role."""
+
+    skill_name: str = Field(..., description="The name of the skill being analyzed")
+    current_level: int = Field(
+        ge=0, le=5, description="User's current proficiency level (0-5)"
+    )
+    required_level: int = Field(
+        ge=0, le=5, description="Target proficiency level for the role (0-5)"
+    )
+    gap_severity: int = Field(
+        ge=1, le=3, description="Priority multiplier (1: Low, 2: Med, 3: High)"
+    )
+    weeks_to_close: int = Field(
+        ge=1, description="Estimated weeks needed to reach the required level"
+    )
+    prerequisites: list[str] = Field(
+        default_factory=list, description="Skills required before tackling this gap"
+    )
+    learning_objective: str = Field(
+        "", description="The high-level outcome once the gap is closed"
+    )
+    priority_rank: int = Field(1, description="Sorted order of importance in the path")
 
     @property
     def gap_size(self) -> int:
+        """Computes the numerical difference between current and required levels."""
         return max(0, self.required_level - self.current_level)
 
 
 class LearningPath(BaseModel):
-    user_id: str
-    target_role: str
-    duration_weeks: int = Field(ge=1)
-    hours_per_week: int = Field(ge=1)
-    skill_gaps: list[SkillGap] = Field(default_factory=list)
-    weeks: list[WeekModule] = Field(default_factory=list)
-    total_hours: float = 0.0
-    version: int = 1
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
-    validation_notes: list[str] = Field(default_factory=list)
+    """The complete personalized curriculum generated by the AI Coach."""
 
-    def current_week(self, week_offset: int = 0) -> WeekModule | None:
-        idx = week_offset
-        if 0 <= idx < len(self.weeks):
-            return self.weeks[idx]
+    user_id: str = Field(..., description="Unique identifier of the user")
+    target_role: str = Field(..., description="The career goal this path is optimized for")
+    duration_weeks: int = Field(ge=1, description="Total duration of the curriculum")
+    hours_per_week: int = Field(
+        ge=1, description="User's committed study bandwidth per week"
+    )
+    skill_gaps: list[SkillGap] = Field(
+        default_factory=list, description="The identified gaps this path aims to fix"
+    )
+    weeks: list[WeekModule] = Field(
+        default_factory=list, description="The week-by-week module breakdown"
+    )
+    total_hours: float = Field(
+        0.0, description="Calculated total hours for the entire path"
+    )
+    version: int = Field(1, description="Schema version for compatibility tracking")
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="Timestamp when the path was generated",
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="Timestamp of the last modification",
+    )
+    validation_notes: list[str] = Field(
+        default_factory=list, description="Assistant notes on path feasibility or constraints"
+    )
+
+    @model_validator(mode="after")
+    def calculate_total_hours(self) -> LearningPath:
+        """Automatically computes the total estimated hours across all weeks."""
+        self.total_hours = sum(w.estimated_hours for w in self.weeks)
+        return self
+
+    def current_week(self, week_offset: int = 0) -> Optional[WeekModule]:
+        """Retrieves a specific week module by its index."""
+        if 0 <= week_offset < len(self.weeks):
+            return self.weeks[week_offset]
         return None
 
     def skills_in_scope(self) -> list[str]:
+        """Returns a list of all primary skills covered in this learning path."""
         return list({w.primary_skill for w in self.weeks})
