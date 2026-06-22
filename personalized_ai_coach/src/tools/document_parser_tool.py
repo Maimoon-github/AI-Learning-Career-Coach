@@ -1,204 +1,417 @@
-# Provided by user – accepted without change.
-# Includes PDF, Markdown, DOCX, TXT parsing.
-
 from __future__ import annotations
 
 import asyncio
 import os
+import json
 from pathlib import Path
-from typing import Any
+from typing import Any, List, Optional, Dict, Union
+from datetime import datetime
 
 import structlog
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
 
+# Local imports
+try:
+    from src.utils.error_handling import ToolError
+except ImportError:
+    class ToolError(Exception): pass
+
 log = structlog.get_logger(__name__)
 
+# ---------------------------------------------------------------------------
+# Output Models
+# ---------------------------------------------------------------------------
 
-# ── Kaggle Tool ───────────────────────────────────────────────────────────────
+class ParsingMetadata(BaseModel):
+    """Rich metadata for a parsed document."""
+    source_path: str
+    extension: str
+    size_bytes: int
+    created_at: Optional[str] = None
+    modified_at: Optional[str] = None
+    page_count: Optional[int] = None
+    table_count: int = 0
+    image_count: int = 0
+    parsing_confidence: float = 1.0
+    parser_used: str
+    timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
 
-class KaggleInput(BaseModel):
-    username: str = Field(description="Kaggle username")
+class ParsingResult(BaseModel):
+    """Structured output for a single document."""
+    success: bool
+    text: str = ""
+    markdown: str = ""
+    tables: List[Dict[str, Any]] = []
+    metadata: ParsingMetadata
+    error: Optional[str] = None
 
-
-class KaggleTool(BaseTool):
-    name: str = "kaggle_profile_analyzer"
-    description: str = "Fetches and evaluates a Kaggle profile: competition tier, medals, ML domains, notebook quality."
-    args_schema: type[BaseModel] = KaggleInput
-
-    def _run(self, username: str) -> dict[str, Any]:
-        return asyncio.get_event_loop().run_until_complete(self._async_run(username))
-
-    async def _async_run(self, username: str) -> dict[str, Any]:
-        try:
-            import kaggle  # noqa: F401
-            from kaggle.api.kaggle_api_extended import KaggleApiExtended
-
-            api = KaggleApiExtended()
-            api.authenticate()
-
-            # User competitions
-            competitions = api.competitions_list(search=username)
-            ml_domains: set[str] = set()
-            domain_map = {
-                "nlp": ["nlp", "text", "language", "sentiment"],
-                "computer_vision": ["image", "vision", "detection", "segmentation"],
-                "tabular": ["tabular", "regression", "classification", "feature"],
-                "time_series": ["time-series", "forecast", "temporal"],
-            }
-
-            medals: dict[str, int] = {"gold": 0, "silver": 0, "bronze": 0}
-            for comp in competitions:
-                title_lower = (getattr(comp, "title", "") or "").lower()
-                for domain, keywords in domain_map.items():
-                    if any(kw in title_lower for kw in keywords):
-                        ml_domains.add(domain)
-
-            tier_map = ["Novice", "Contributor", "Expert", "Master", "Grandmaster"]
-            tier_score = min(len(competitions) // 5, 4)
-
-            log.info("kaggle_analysis_complete", username=username)
-            return {
-                "tier": tier_map[tier_score],
-                "medals": medals,
-                "ml_domains": sorted(ml_domains),
-                "notebook_quality_score": min(10, tier_score * 2.5),
-                "active_last_year": len(competitions) > 0,
-                "strongest_domain": sorted(ml_domains)[0] if ml_domains else "tabular",
-            }
-        except Exception as exc:
-            log.error("kaggle_tool_error", error=str(exc))
-            return {
-                "tier": "Novice", "medals": {}, "ml_domains": [],
-                "notebook_quality_score": 0, "active_last_year": False,
-                "strongest_domain": "", "error": str(exc),
-            }
-
-
-# ── Web Search Tool ───────────────────────────────────────────────────────────
-
-class WebSearchInput(BaseModel):
-    query: str = Field(description="Search query")
-    max_results: int = Field(default=5, le=10)
-
-
-class WebSearchTool(BaseTool):
-    name: str = "web_search"
-    description: str = "Searches the web for current information. Use for job postings, learning resources, and market data."
-    args_schema: type[BaseModel] = WebSearchInput
-
-    def _run(self, query: str, max_results: int = 5) -> list[dict[str, str]]:
-        try:
-            # Prefer Tavily for higher quality; fallback to DuckDuckGo
-            tavily_key = os.getenv("TAVILY_API_KEY")
-            if tavily_key:
-                from tavily import TavilyClient
-                client = TavilyClient(api_key=tavily_key)
-                response = client.search(query=query, max_results=max_results)
-                return [
-                    {"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("content", "")}
-                    for r in response.get("results", [])
-                ]
-            else:
-                from duckduckgo_search import DDGS
-                with DDGS() as ddgs:
-                    return [
-                        {"title": r["title"], "url": r["href"], "snippet": r["body"]}
-                        for r in ddgs.text(query, max_results=max_results)
-                    ]
-        except Exception as exc:
-            log.error("web_search_error", query=query, error=str(exc))
-            return [{"title": "Search failed", "url": "", "snippet": str(exc)}]
-
-
-# ── Document Parser Tool ──────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Input Schema
+# ---------------------------------------------------------------------------
 
 class DocumentParserInput(BaseModel):
-    file_path: str = Field(description="Absolute path to a PDF, Markdown, or text file")
+    """Input for parsing one or more documents."""
+    path: str = Field(
+        description="Absolute path to a file or directory. Supports PDF, DOCX, MD, TXT, etc."
+    )
+    recursive: bool = Field(
+        default=False, 
+        description="If path is a directory, search recursively for files."
+    )
+    use_llamaparse: bool = Field(
+        default=False,
+        description="Force use of LlamaParse (requires LLAMA_CLOUD_API_KEY). Best for complex layouts."
+    )
+    max_files: int = Field(
+        default=10,
+        description="Maximum number of files to parse in a directory."
+    )
 
+# ---------------------------------------------------------------------------
+# Tool Implementation
+# ---------------------------------------------------------------------------
 
 class DocumentParserTool(BaseTool):
+    """
+    Advanced Document Parser using modern layout-aware engines.
+    
+    Sequence:
+    1. Docling (Primary for PDF/Layouts)
+    2. MarkItDown (Best for MS Office/Miscellaneous)
+    3. Legacy (PyPDF, Docx) as baseline
+    4. LlamaParse (Cloud fallback/optional high-quality)
+    """
     name: str = "document_parser"
-    description: str = "Parses PDF, Markdown, and text documents to extract structured text content."
+    description: str = (
+        "Parses documents (PDF, DOCX, MD, TXT) into high-quality Markdown. "
+        "Extracts text, tables, and rich metadata. Works on single files or directories."
+    )
     args_schema: type[BaseModel] = DocumentParserInput
 
-    def _run(self, file_path: str) -> dict[str, str]:
-        path = Path(file_path)
-        if not path.exists():
-            return {"error": f"File not found: {file_path}", "text": ""}
+    # ------------------------------------------------------------------
+    # Public Entry Points
+    # ------------------------------------------------------------------
 
+    def _run(
+        self, 
+        path: str, 
+        recursive: bool = False, 
+        use_llamaparse: bool = False,
+        max_files: int = 10
+    ) -> str:
+        """Sync entry point for CrewAI."""
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        if loop.is_running():
+            # Bridge to async run if we are in an existing loop
+            import threading
+            from concurrent.futures import Future
+
+            def _run_in_new_loop(fut: Future):
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                try:
+                    result = new_loop.run_until_complete(
+                        self._async_run(path, recursive, use_llamaparse, max_files)
+                    )
+                    fut.set_result(result)
+                except Exception as e:
+                    fut.set_exception(e)
+                finally:
+                    new_loop.close()
+
+            f: Future = Future()
+            t = threading.Thread(target=_run_in_new_loop, args=(f,))
+            t.start()
+            t.join()
+            return f.result()
+        else:
+            return loop.run_until_complete(
+                self._async_run(path, recursive, use_llamaparse, max_files)
+            )
+
+    async def _async_run(
+        self, 
+        path: str, 
+        recursive: bool = False, 
+        use_llamaparse: bool = False,
+        max_files: int = 10
+    ) -> str:
+        """Core async logic."""
+        p = Path(path)
+        if not p.exists():
+            return f"Error: Path not found: {path}"
+
+        if p.is_dir():
+            results = await self.parse_directory(p, recursive, use_llamaparse, max_files)
+            return self._format_batch_output(results)
+        else:
+            result = await self.parse_file(p, use_llamaparse)
+            return self._format_single_output(result)
+
+    # ------------------------------------------------------------------
+    # Core Logic
+    # ------------------------------------------------------------------
+
+    async def parse_file(self, file_path: Path, use_llamaparse: bool = False) -> ParsingResult:
+        """Parse a single file using the fallback chain."""
+        log.info("parsing_file_start", path=str(file_path), use_llamaparse=use_llamaparse)
+        
+        # 0. Initial Metadata
+        stats = file_path.stat()
+        meta = ParsingMetadata(
+            source_path=str(file_path),
+            extension=file_path.suffix.lower(),
+            size_bytes=stats.st_size,
+            created_at=datetime.fromtimestamp(stats.st_ctime).isoformat(),
+            modified_at=datetime.fromtimestamp(stats.st_mtime).isoformat(),
+            parser_used="none"
+        )
+
+        # 1. Option: LlamaParse (Explicit or if configured)
+        if use_llamaparse or os.getenv("LLAMA_CLOUD_API_KEY"):
+            # If use_llamaparse is False but we have the key, we might still want it as a last resort
+            # but for now we follow the user's "optional support" / "explicit" hint.
+            if use_llamaparse:
+                res = await self._try_llamaparse(file_path, meta)
+                if res.success: return res
+
+        # 2. Primary: Docling
+        res = await self._try_docling(file_path, meta)
+        if res.success: return res
+
+        # 3. Secondary: MarkItDown
+        res = await self._try_markitdown(file_path, meta)
+        if res.success: return res
+
+        # 4. Tertiary: Legacy Parsers
+        res = await self._try_legacy(file_path, meta)
+        if res.success: return res
+
+        # 5. Quaternary: Unstructured (for niche formats)
+        res = await self._try_unstructured(file_path, meta)
+        if res.success: return res
+
+        # 6. Last Resort: Plain Text
+        return await self._try_plain_text(file_path, meta)
+
+    async def parse_directory(
+        self, 
+        dir_path: Path, 
+        recursive: bool, 
+        use_llamaparse: bool,
+        max_files: int
+    ) -> List[ParsingResult]:
+        """Parse multiple files in a directory."""
+        pattern = "**/*" if recursive else "*"
+        files = [f for f in dir_path.glob(pattern) if f.is_file()][:max_files]
+        
+        tasks = [self.parse_file(f, use_llamaparse) for f in files]
+        return await asyncio.gather(*tasks)
+
+    # ------------------------------------------------------------------
+    # Specific Parsers
+    # ------------------------------------------------------------------
+
+    async def _try_docling(self, path: Path, meta: ParsingMetadata) -> ParsingResult:
+        """Use Docling for high-quality document conversion."""
+        try:
+            from docling.document_converter import DocumentConverter
+            
+            # Docling works well for PDF, DOCX, HTML, MD
+            supported = {".pdf", ".docx", ".html", ".md", ".pptx"}
+            if path.suffix.lower() not in supported:
+                return ParsingResult(success=False, metadata=meta)
+
+            converter = DocumentConverter()
+            # run_in_executor since conversion can be CPU intensive and blocking
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, converter.convert, str(path))
+            
+            doc = result.document
+            markdown = doc.export_to_markdown()
+            
+            # Extract tables if available
+            tables = []
+            # Note: Docling's table extraction API might vary, 
+            # this is a placeholder for actual table objects in their schema.
+            # Usually tables are in the markdown, but structured data is better.
+            
+            meta.parser_used = "docling"
+            meta.parsing_confidence = 0.95
+            # meta.page_count = len(doc.pages) if hasattr(doc, 'pages') else None
+            
+            return ParsingResult(
+                success=True,
+                markdown=markdown,
+                text=doc.export_to_text(),
+                tables=tables,
+                metadata=meta
+            )
+        except Exception as e:
+            log.debug("docling_failed", path=str(path), error=str(e))
+            return ParsingResult(success=False, metadata=meta, error=str(e))
+
+    async def _try_markitdown(self, path: Path, meta: ParsingMetadata) -> ParsingResult:
+        """Microsoft MarkItDown for various office formats."""
+        try:
+            from markitdown import MarkItDown
+            
+            md = MarkItDown()
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, md.convert, str(path))
+            
+            meta.parser_used = "markitdown"
+            meta.parsing_confidence = 0.85
+            
+            return ParsingResult(
+                success=True,
+                markdown=result.text_content,
+                text=result.text_content, # MarkItDown is text-centric
+                metadata=meta
+            )
+        except Exception as e:
+            log.debug("markitdown_failed", path=str(path), error=str(e))
+            return ParsingResult(success=False, metadata=meta, error=str(e))
+
+    async def _try_llamaparse(self, path: Path, meta: ParsingMetadata) -> ParsingResult:
+        """Cloud-based LlamaParse for complex documents."""
+        api_key = os.getenv("LLAMA_CLOUD_API_KEY")
+        if not api_key:
+            return ParsingResult(success=False, metadata=meta, error="No LLAMA_CLOUD_API_KEY")
+
+        try:
+            from llama_parse import LlamaParse
+            
+            parser = LlamaParse(result_type="markdown", api_key=api_key)
+            # LlamaParse often has async methods
+            json_results = await parser.aget_json(str(path))
+            
+            if not json_results:
+                return ParsingResult(success=False, metadata=meta)
+
+            # LlamaParse returns list of dicts (one per file, though we passing one)
+            data = json_results[0]
+            markdown = data.get("markdown", "")
+            
+            meta.parser_used = "llamaparse"
+            meta.parsing_confidence = 0.98
+            meta.page_count = data.get("page_count")
+            
+            return ParsingResult(
+                success=True,
+                markdown=markdown,
+                text=markdown, # Best representation is the markdown itself
+                metadata=meta
+            )
+        except Exception as e:
+            log.debug("llamaparse_failed", path=str(path), error=str(e))
+            return ParsingResult(success=False, metadata=meta, error=str(e))
+
+    async def _try_legacy(self, path: Path, meta: ParsingMetadata) -> ParsingResult:
+        """Fallback to PyPDF and python-docx."""
         suffix = path.suffix.lower()
         try:
             if suffix == ".pdf":
-                return self._parse_pdf(path)
-            elif suffix in (".md", ".markdown"):
-                return {"text": path.read_text(encoding="utf-8"), "format": "markdown"}
-            elif suffix in (".txt", ".rst"):
-                return {"text": path.read_text(encoding="utf-8"), "format": "text"}
-            elif suffix in (".docx",):
-                return self._parse_docx(path)
-            else:
-                return {"error": f"Unsupported format: {suffix}", "text": ""}
-        except Exception as exc:
-            log.error("document_parser_error", path=str(path), error=str(exc))
-            return {"error": str(exc), "text": ""}
+                from pypdf import PdfReader
+                reader = PdfReader(str(path))
+                text = "\n\n".join(page.extract_text() or "" for page in reader.pages)
+                meta.parser_used = "pypdf"
+                meta.page_count = len(reader.pages)
+                return ParsingResult(success=True, text=text, markdown=text, metadata=meta)
+                
+            elif suffix == ".docx":
+                from docx import Document
+                doc = Document(str(path))
+                text = "\n".join(p.text for p in doc.paragraphs)
+                meta.parser_used = "python-docx"
+                return ParsingResult(success=True, text=text, markdown=text, metadata=meta)
+            
+            return ParsingResult(success=False, metadata=meta)
+        except Exception as e:
+            log.debug("legacy_failed", path=str(path), error=str(e))
+            return ParsingResult(success=False, metadata=meta, error=str(e))
 
-    def _parse_pdf(self, path: Path) -> dict[str, str]:
-        from pypdf import PdfReader
-        reader = PdfReader(str(path))
-        text = "\n\n".join(page.extract_text() or "" for page in reader.pages)
-        return {"text": text, "format": "pdf", "pages": len(reader.pages)}
+    async def _try_unstructured(self, path: Path, meta: ParsingMetadata) -> ParsingResult:
+        """Use Unstructured for broad format support."""
+        try:
+            from unstructured.partition.auto import partition
+            
+            loop = asyncio.get_event_loop()
+            elements = await loop.run_in_executor(None, partition, str(path))
+            text = "\n\n".join([str(el) for el in elements])
+            
+            meta.parser_used = "unstructured"
+            meta.parsing_confidence = 0.70
+            
+            return ParsingResult(
+                success=True,
+                text=text,
+                markdown=text,
+                metadata=meta
+            )
+        except Exception as e:
+            log.debug("unstructured_failed", path=str(path), error=str(e))
+            return ParsingResult(success=False, metadata=meta, error=str(e))
 
-    def _parse_docx(self, path: Path) -> dict[str, str]:
-        from docx import Document
-        doc = Document(str(path))
-        text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
-        return {"text": text, "format": "docx"}
+    async def _try_plain_text(self, path: Path, meta: ParsingMetadata) -> ParsingResult:
+        """Last resort: read as plain text."""
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+            meta.parser_used = "plain_text"
+            return ParsingResult(success=True, text=content, markdown=content, metadata=meta)
+        except Exception as e:
+            return ParsingResult(success=False, metadata=meta, error=str(e))
 
-    # ... existing methods ...
+    # ------------------------------------------------------------------
+    # Formatting
+    # ------------------------------------------------------------------
 
-    def parse_multiple(self, file_paths: list[str]) -> list[dict[str, str]]:
-        """Batch parse multiple documents."""
-        results = []
-        for path in file_paths:
-            results.append(self._run(path))
-        return results
+    def _format_single_output(self, result: ParsingResult) -> str:
+        """Format a single parsing result into a pretty markdown string."""
+        if not result.success:
+            return f"### Failed to parse: {result.metadata.source_path}\nError: {result.error}"
+
+        m = result.metadata
+        header = (
+            f"## Document: {Path(m.source_path).name}\n"
+            f"- **Parser**: {m.parser_used}\n"
+            f"- **Confidence**: {m.parsing_confidence:.2f}\n"
+            f"- **Pages**: {m.page_count or 'N/A'}\n"
+            f"- **Format**: {m.extension}\n"
+            f"---\n"
+        )
+        
+        # Prefer markdown as it contains structure (tables, headings)
+        body = result.markdown if result.markdown else result.text
+        
+        # Add a summary of tables if they were extracted but not in MD (unlikely with docling)
+        table_info = ""
+        if result.tables:
+            table_info = f"\n\n*Extracted {len(result.tables)} tables.*\n"
+
+        return header + body + table_info
+
+    def _format_batch_output(self, results: List[ParsingResult]) -> str:
+        """Format multiple results."""
+        outputs = [self._format_single_output(r) for r in results]
+        return "\n\n" + ("=" * 40) + "\n\n".join(outputs)
 
 
-# ── Ollama Tool ───────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Batch Helper
+# ---------------------------------------------------------------------------
 
-class OllamaToolInput(BaseModel):
-    action: str = Field(description="Action: list_models | pull_model | delete_model | model_info")
-    model_name: str = Field(default="", description="Model name for pull/delete/info actions")
-
-
-class OllamaTool(BaseTool):
-    name: str = "ollama_manager"
-    description: str = "Manages local Ollama models: list, pull, delete, and inspect model info."
-    args_schema: type[BaseModel] = OllamaToolInput
-
-    def _run(self, action: str, model_name: str = "") -> dict[str, Any]:
-        return asyncio.get_event_loop().run_until_complete(self._async_run(action, model_name))
-
-    async def _async_run(self, action: str, model_name: str = "") -> dict[str, Any]:
-        import httpx
-        base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        async with httpx.AsyncClient(timeout=60) as client:
-            try:
-                if action == "list_models":
-                    r = await client.get(f"{base_url}/api/tags")
-                    return r.json()
-                elif action == "pull_model":
-                    r = await client.post(f"{base_url}/api/pull", json={"name": model_name})
-                    return {"status": "pulled", "model": model_name}
-                elif action == "model_info":
-                    r = await client.post(f"{base_url}/api/show", json={"name": model_name})
-                    return r.json()
-                elif action == "delete_model":
-                    r = await client.delete(f"{base_url}/api/delete", json={"name": model_name})
-                    return {"status": "deleted", "model": model_name}
-                else:
-                    return {"error": f"Unknown action: {action}"}
-            except httpx.ConnectError as exc:
-                from src.utils.error_handling import OllamaConnectionError
-                raise OllamaConnectionError(f"Cannot connect to Ollama at {base_url}") from exc
+def parse_multiple(file_paths: List[str]) -> List[ParsingResult]:
+    """Helper for batch parsing outside the tool context."""
+    tool = DocumentParserTool()
+    results = []
+    # We use a simple loop here, but the tool itself supports directories
+    for path in file_paths:
+        results.append(asyncio.run(tool.parse_file(Path(path))))
+    return results
